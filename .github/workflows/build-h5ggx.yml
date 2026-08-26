@@ -50,11 +50,26 @@ jobs:
           cp H5GGX-Embedded.html upstream/Index-en.html
           python3 - <<'PY'
           from pathlib import Path
+
+          # Current Xcode/SDK rejects upstream's legacy extern-C header wrapping.
+          cp = Path('upstream/crossproc.h')
+          c = cp.read_text()
+          c = c.replace('extern "C" {\n#include "dyld64.h"\n#include "libproc.h"\n#include "proc_info.h"\n}', '#include "dyld64.h"\n#include "libproc.h"\n#include "proc_info.h"')
+          cp.write_text(c)
+
+          # Upstream bundled ldid emits warnings promoted to errors by modern toolchains.
+          lp = Path('upstream/ldid-master/ldid.cpp')
+          l = lp.read_text()
+          guard = '#pragma clang diagnostic ignored "-Wmacro-redefined"\n#pragma clang diagnostic ignored "-Wunused-but-set-variable"\n'
+          if guard not in l:
+              l = guard + l
+          lp.write_text(l)
+
           p=Path('upstream/Makefile')
           s=p.read_text()
           s=s.replace('TARGET = iphone:13.7:11.4','TARGET = iphone:clang:latest:11.0')
-          s=s.replace('H5GG_CFLAGS = -fobjc-arc -fvisibility=hidden', 'H5GG_CFLAGS = -fobjc-arc -fvisibility=hidden -fno-modules -Wno-error -Wno-module-import-in-extern-c')
-          s=s.replace('H5GG_CCFLAGS = -fobjc-arc -fvisibility=hidden -std=c++11', 'H5GG_CCFLAGS = -fobjc-arc -fvisibility=hidden -std=c++11 -fno-modules -Wno-error -Wno-macro-redefined -Wno-unused-but-set-variable -Wno-module-import-in-extern-c')
+          s += '\nH5GG_CFLAGS += -Wno-error -Wno-module-import-in-extern-c\n'
+          s += 'H5GG_CCFLAGS += -Wno-error -Wno-macro-redefined -Wno-unused-but-set-variable -Wno-module-import-in-extern-c\n'
           marker='H5GG_LOGOS_DEFAULT_GENERATOR = internal'
           if 'H5GG_FRAMEWORKS =' not in s:
               s=s.replace(marker, 'H5GG_FRAMEWORKS = UIKit Foundation JavaScriptCore SystemConfiguration CoreGraphics\n'+marker)
