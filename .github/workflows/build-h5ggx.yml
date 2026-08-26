@@ -1,0 +1,81 @@
+name: Build H5GGX dylib
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'Index.html'
+      - 'src/**'
+      - '.github/workflows/build-h5ggx.yml'
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout H5GGX overlay
+        uses: actions/checkout@v4
+
+      - name: Validate JavaScript
+        run: |
+          node --check src/h5ggx.js
+          node --check src/h5ggx-pro.js
+
+      - name: Build embedded H5 UI
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          html = Path('Index.html').read_text(encoding='utf-8')
+          css = Path('src/style.css').read_text(encoding='utf-8')
+          js = Path('src/h5ggx.js').read_text(encoding='utf-8')
+          pro = Path('src/h5ggx-pro.js').read_text(encoding='utf-8')
+          html = html.replace('<link rel="stylesheet" href="src/style.css" />', '<style>\n'+css+'\n</style>')
+          html = html.replace('<script src="src/h5ggx.js"></script>', '<script>\n'+js+'\n</script>')
+          html = html.replace('<script src="src/h5ggx-pro.js"></script>', '<script>\n'+pro+'\n</script>')
+          Path('H5GGX-Embedded.html').write_text(html, encoding='utf-8')
+          PY
+
+      - name: Checkout upstream H5GG
+        run: git clone --recursive --depth 1 https://github.com/H5GG/H5GG.git upstream
+
+      - name: Install Theos
+        run: |
+          brew install ldid xz || true
+          git clone --recursive --depth 1 https://github.com/theos/theos.git "$HOME/theos"
+          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
+
+      - name: Integrate H5GGX into H5GG core
+        run: |
+          cp H5GGX-Embedded.html upstream/Index.html
+          cp H5GGX-Embedded.html upstream/Index-en.html
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('upstream/Makefile')
+          s=p.read_text()
+          s=s.replace('TARGET = iphone:13.7:11.4','TARGET = iphone:clang:latest:11.0')
+          s=s.replace('TWEAK_NAME = H5GG','TWEAK_NAME = H5GG')
+          p.write_text(s)
+          PY
+
+      - name: Build ARM64 H5GGX
+        working-directory: upstream
+        run: |
+          export THEOS="$HOME/theos"
+          make clean
+          make -j2
+
+      - name: Collect dylib
+        run: |
+          mkdir -p output
+          DYLIB=$(find upstream/.theos -type f -name 'H5GG.dylib' | head -n 1)
+          test -n "$DYLIB"
+          cp "$DYLIB" output/H5GGX.dylib
+          file output/H5GGX.dylib
+          ls -lh output/H5GGX.dylib
+
+      - name: Upload H5GGX dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: H5GGX-arm64
+          path: output/H5GGX.dylib
+          if-no-files-found: error
