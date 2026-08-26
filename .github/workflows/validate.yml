@@ -1,0 +1,18 @@
+name: Validate H5GGX
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax check
+        run: node --check src/h5ggx.js
+      - name: Required files
+        run: test -f Index.html && test -f src/style.css && test -f src/h5ggx.js
