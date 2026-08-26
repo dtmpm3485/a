@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>H5GGX</title>
+<link rel="stylesheet" href="src/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <div><strong>H5GGX</strong><span id="mode" class="badge">checking</span></div>
+  <button id="exportBtn">Export</button>
+</header>
+
+<main>
+<section class="card">
+  <div class="row">
+    <input id="value" inputmode="decimal" placeholder="検索値" />
+    <select id="type">
+      <option value="I32">I32</option><option value="I64">I64</option>
+      <option value="F32">F32</option><option value="F64">F64</option>
+      <option value="I16">I16</option><option value="I8">I8</option>
+    </select>
+  </div>
+  <div class="row">
+    <input id="rangeStart" value="0x000000000" placeholder="開始アドレス" />
+    <input id="rangeEnd" value="0x200000000" placeholder="終了アドレス" />
+  </div>
+  <div class="actions">
+    <button id="searchBtn" class="primary">検索</button>
+    <button id="nearBtn">Nearby</button>
+    <button id="clearBtn">クリア</button>
+  </div>
+</section>
+
+<nav class="tabs">
+  <button data-tab="results" class="active">結果</button>
+  <button data-tab="watch">監視</button>
+  <button data-tab="bookmarks">保存</button>
+  <button data-tab="history">履歴</button>
+</nav>
+
+<section id="results" class="panel active">
+  <div class="toolbar">
+    <input id="filter" placeholder="アドレス/値で絞り込み" />
+    <select id="diffMode"><option value="all">全部</option><option value="changed">Changed</option><option value="unchanged">Unchanged</option><option value="increased">Increased</option><option value="decreased">Decreased</option></select>
+  </div>
+  <div class="actions compact">
+    <button id="snapshotBtn">Snapshot</button><button id="refreshBtn">更新</button>
+  </div>
+  <div id="resultList" class="list"></div>
+  <div class="bulkbar"><input id="bulkValue" placeholder="選択項目の新しい値"/><button id="bulkSetBtn">一括編集</button></div>
+</section>
+
+<section id="watch" class="panel"><div id="watchList" class="list"></div></section>
+<section id="bookmarks" class="panel"><div id="bookmarkList" class="list"></div></section>
+<section id="history" class="panel"><div id="historyList" class="list"></div></section>
+
+<input id="importFile" type="file" accept="application/json" hidden />
+</main>
+<script src="src/h5ggx.js"></script>
+</body>
+</html>
