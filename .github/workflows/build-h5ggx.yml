@@ -51,13 +51,16 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          # Current Xcode/SDK rejects upstream's legacy extern-C header wrapping.
+          # Preload system headers outside upstream's extern-C block so Xcode modules
+          # do not get imported from inside C linkage, while preserving C symbols.
           cp = Path('upstream/crossproc.h')
           c = cp.read_text()
-          c = c.replace('extern "C" {\n#include "dyld64.h"\n#include "libproc.h"\n#include "proc_info.h"\n}', '#include "dyld64.h"\n#include "libproc.h"\n#include "proc_info.h"')
+          preload = '''#include <sys/cdefs.h>\n#include <sys/_types.h>\n#include <sys/param.h>\n#include <sys/types.h>\n#include <sys/mount.h>\n#include <sys/socket.h>\n#include <sys/un.h>\n#include <net/if.h>\n#include <netinet/in.h>\n'''
+          anchor = '#import <mach-o/dyld_images.h>\n'
+          if preload not in c:
+              c = c.replace(anchor, anchor + preload)
           cp.write_text(c)
 
-          # Upstream bundled ldid emits warnings promoted to errors by modern toolchains.
           lp = Path('upstream/ldid-master/ldid.cpp')
           l = lp.read_text()
           guard = '#pragma clang diagnostic ignored "-Wmacro-redefined"\n#pragma clang diagnostic ignored "-Wunused-but-set-variable"\n'
