@@ -35,6 +35,7 @@
 
 <nav class="tabs">
   <button data-tab="results" class="active">結果</button>
+  <button data-tab="arm64">ARM64</button>
   <button data-tab="watch">監視</button>
   <button data-tab="bookmarks">保存</button>
   <button data-tab="history">履歴</button>
@@ -50,6 +51,14 @@
   </div>
   <div id="resultList" class="list"></div>
   <div class="bulkbar"><input id="bulkValue" placeholder="選択項目の新しい値"/><button id="bulkSetBtn">一括編集</button></div>
+</section>
+
+<section id="arm64" class="panel">
+  <div class="row"><select id="moduleSelect"></select><button id="reloadModulesBtn">Modules更新</button></div>
+  <div class="row"><input id="armAddress" placeholder="0x100000000 または module+0x1234"/><input id="armCount" type="number" min="1" max="128" value="24" placeholder="命令数"/></div>
+  <div class="actions"><button id="armReadBtn" class="primary">ARM64を読む</button><button id="armUseModuleBtn">Module先頭</button></div>
+  <div id="moduleInfo" class="moduleInfo"></div>
+  <div id="armList" class="list armList"></div>
 </section>
 
 <section id="watch" class="panel"><div id="watchList" class="list"></div></section>
