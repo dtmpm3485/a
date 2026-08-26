@@ -53,7 +53,8 @@ jobs:
           p=Path('upstream/Makefile')
           s=p.read_text()
           s=s.replace('TARGET = iphone:13.7:11.4','TARGET = iphone:clang:latest:11.0')
-          s=s.replace('TWEAK_NAME = H5GG','TWEAK_NAME = H5GG')
+          s=s.replace('H5GG_CFLAGS = -fobjc-arc -fvisibility=hidden', 'H5GG_CFLAGS = -fobjc-arc -fvisibility=hidden -fno-modules -Wno-error')
+          s=s.replace('H5GG_CCFLAGS = -fobjc-arc -fvisibility=hidden -std=c++11', 'H5GG_CCFLAGS = -fobjc-arc -fvisibility=hidden -std=c++11 -fno-modules -Wno-error -Wno-macro-redefined -Wno-unused-but-set-variable')
           p.write_text(s)
           PY
 
