@@ -14,6 +14,10 @@ static id H5XController = nil;
 static UIColor* H5XColor(CGFloat r, CGFloat g, CGFloat b) {
     return [UIColor colorWithRed:r/255.0 green:g/255.0 blue:b/255.0 alpha:1.0];
 }
+static UIFont* H5XMono(CGFloat size) {
+    UIFont *f=[UIFont fontWithName:@"Menlo-Regular" size:size];
+    return f ?: [UIFont systemFontOfSize:size];
+}
 static NSString* H5XAddr(uint64_t v) {
     return [NSString stringWithFormat:@"0x%llX", v];
 }
@@ -329,7 +333,7 @@ static uint64_t H5XParseAddr(NSString *s) {
     [s addArrangedSubview:[self button:@"モジュール再取得" action:@selector(loadModules)]];
 
     self.moduleInfo=[self label:@"未取得" size:10 color:H5XColor(153,177,215)];
-    self.moduleInfo.font=[UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightRegular];
+    self.moduleInfo.font=H5XMono(10 weight:UIFontWeightRegular);
     [s addArrangedSubview:self.moduleInfo];
 
     self.offsetField=[self field:@"Offset 例: 0x123456" value:@"0x0"];
@@ -356,7 +360,7 @@ static uint64_t H5XParseAddr(NSString *s) {
     self.hexView.scrollEnabled=YES;
     self.hexView.backgroundColor=H5XColor(7,14,23);
     self.hexView.textColor=H5XColor(198,211,232);
-    self.hexView.font=[UIFont monospacedSystemFontOfSize:9 weight:UIFontWeightRegular];
+    self.hexView.font=H5XMono(9 weight:UIFontWeightRegular);
     self.hexView.layer.cornerRadius=9;
     self.hexView.heightAnchor.constraintEqualToConstant(190).active=YES;
     [s addArrangedSubview:self.hexView];
@@ -653,7 +657,7 @@ static uint64_t H5XParseAddr(NSString *s) {
     [NSLayoutConstraint activateConstraints:@[[s.leadingAnchor constraintEqualToAnchor:c.leadingAnchor constant:9],[s.trailingAnchor constraintEqualToAnchor:c.trailingAnchor constant:-9],[s.topAnchor constraintEqualToAnchor:c.topAnchor constant:8],[s.bottomAnchor constraintEqualToAnchor:c.bottomAnchor constant:-8]]];
     UILabel *loc=[self label:[self moduleOffset:a] size:10 color:H5XColor(142,171,217)];loc.font=[UIFont monospacedDigitSystemFontOfSize:10 weight:UIFontWeightRegular];
     UILabel *hex=[self label:H5XHex32(w) size:10 color:H5XColor(238,193,116)];hex.font=[UIFont monospacedDigitSystemFontOfSize:10 weight:UIFontWeightRegular];
-    UILabel *asmL=[self label:d[@"asm"] size:11 color:H5XColor(221,231,246)];asmL.font=[UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
+    UILabel *asmL=[self label:d[@"asm"] size:11 color:H5XColor(221,231,246)];asmL.font=H5XMono(11 weight:UIFontWeightRegular);
     [s addArrangedSubview:loc];[s addArrangedSubview:hex];[s addArrangedSubview:asmL];
     UIButton *nop=[self button:@"NOP" action:@selector(nopPressed:)];nop.accessibilityValue=H5XAddr(a);
     UIButton *edit=[self button:@"編集" action:@selector(editWordPressed:)];edit.accessibilityValue=H5XAddr(a);
@@ -753,13 +757,13 @@ static uint64_t H5XParseAddr(NSString *s) {
 }
 - (void)closeWindow { H5XWindow.hidden=YES; }
 - (void)dragWindow:(UIPanGestureRecognizer*)g {
-    CGPoint t=[g translationInView:H5XWindow.superview];
+    CGPoint t=[g translationInView:H5XWindow];
     if(g.state==UIGestureRecognizerStateChanged||g.state==UIGestureRecognizerStateEnded){
         CGRect f=H5XWindow.frame;f.origin.x+=t.x;f.origin.y+=t.y;
         CGRect b=UIScreen.mainScreen.bounds;
         f.origin.x=MAX(0,MIN(f.origin.x,b.size.width-f.size.width));
         f.origin.y=MAX(0,MIN(f.origin.y,b.size.height-f.size.height));
-        H5XWindow.frame=f;[g setTranslation:CGPointZero inView:H5XWindow.superview];
+        H5XWindow.frame=f;[g setTranslation:CGPointZero inView:H5XWindow];
     }
 }
 @end
