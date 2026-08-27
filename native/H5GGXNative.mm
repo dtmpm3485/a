@@ -743,7 +743,6 @@ static uint64_t H5XParseAddr(NSString *s) {
                                            &outSize);
 
     sys_icache_invalidate((void*)a,sizeof(w));
-    __builtin___clear_cache((char*)a,(char*)a+sizeof(w));
 
     kern_return_t restoreKr=KERN_SUCCESS;
     if(changedProtection){
