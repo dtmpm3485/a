@@ -57,7 +57,7 @@ static uint64_t H5XParseAddr(NSString *s) {
 @property(nonatomic,strong) UIButton *moduleButton;
 @property(nonatomic,strong) UILabel *moduleInfo;
 @property(nonatomic,strong) UITextField *offsetField;
-@property(nonatomic,strong) UISegmentedControl *armAddressMode;
+@property(nonatomic,strong) UITextField *patchInstructionField;
 @property(nonatomic,strong) UITextField *countField;
 @property(nonatomic,strong) UILabel *armStatus;
 @property(nonatomic,strong) UIStackView *armStack;
@@ -342,18 +342,22 @@ static uint64_t H5XParseAddr(NSString *s) {
     self.moduleInfo.font=H5XMono(10);
     [s addArrangedSubview:self.moduleInfo];
 
-    self.armAddressMode=[[UISegmentedControl alloc] initWithItems:@[@"iGG VA",@"RVA"]];
-    self.armAddressMode.selectedSegmentIndex=0;
-    [self.armAddressMode.heightAnchor constraintEqualToConstant:36].active=YES;
-    [s addArrangedSubview:self.armAddressMode];
-    [s addArrangedSubview:[self label:@"iGG VA: dyld slide + 入力値 / RVA: runtime base + offset" size:10 color:H5XColor(143,166,202)]];
+    [s addArrangedSubview:[self label:@"iGG方式: Runtime Address = dyld slide + 入力Offset/VA" size:10 color:H5XColor(143,166,202)]];
 
     self.offsetField=[self field:@"iGG Offset/VA 例: 0x100123456" value:@"0x0"];
-    self.countField=[self field:@"命令数" value:@"32"];
+    self.countField=[self field:@"表示命令数" value:@"32"];
     self.countField.keyboardType=UIKeyboardTypeNumberPad;
     [s addArrangedSubview:self.offsetField];
     [s addArrangedSubview:self.countField];
     [s addArrangedSubview:[self primaryButton:@"このOffsetを読む" action:@selector(readARM64)]];
+
+    UILabel *liveTitle=[self label:@"iGG Live Patch" size:15 color:UIColor.whiteColor];
+    liveTitle.font=[UIFont systemFontOfSize:15 weight:UIFontWeightBold];
+    [s addArrangedSubview:liveTitle];
+    [s addArrangedSubview:[self label:@"HEXまたはARM64を直接入力: NOP / RET / BR X8 / BL 0x... / MOV W0,#1 / ADD X0,X0,#1" size:10 color:H5XColor(143,166,202)]];
+    self.patchInstructionField=[self field:@"ARM64 / HEX 例: NOP または D503201F" value:@"NOP"];
+    [s addArrangedSubview:self.patchInstructionField];
+    [s addArrangedSubview:[self primaryButton:@"このOffsetへ適用" action:@selector(applyLivePatchDirect)]];
 
     self.armStatus=[self label:@"まだ読み込んでいません" size:10 color:H5XColor(143,166,202)];
     [s addArrangedSubview:self.armStatus];
@@ -655,14 +659,8 @@ static uint64_t H5XParseAddr(NSString *s) {
 - (void)readARM64 {
     NSDictionary *m=[self currentModule]; if(!m){[self alert:@"モジュールを選択してください"];return;}
     uint64_t input=H5XParseAddr(self.offsetField.text);
-    uint64_t start=0;
-    if(self.armAddressMode.selectedSegmentIndex==0){
-        uint64_t slide=H5XParseAddr(m[@"slide"]);
-        start=(slide+input)&~3ULL;
-    } else {
-        uint64_t base=H5XParseAddr(m[@"start"]);
-        start=(base+input)&~3ULL;
-    }
+    uint64_t slide=H5XParseAddr(m[@"slide"]);
+    uint64_t start=(slide+input)&~3ULL;
     NSInteger count=MAX(1,MIN(128,self.countField.text.integerValue?:32));
     self.armStart=start;
     self.armStatus.text=[NSString stringWithFormat:@"開始 %@ / %@",[self moduleOffset:start],H5XAddr(start)];
@@ -690,6 +688,148 @@ static uint64_t H5XParseAddr(NSString *s) {
     [s addArrangedSubview:[self hstack:btns]];
     return c;
 }
+
+- (NSArray*)asmTokens:(NSString*)input {
+    NSString *u=[[input uppercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    u=[u stringByReplacingOccurrencesOfString:@"," withString:@" "];
+    u=[u stringByReplacingOccurrencesOfString:@"#" withString:@""];
+    while([u containsString:@"  "]) u=[u stringByReplacingOccurrencesOfString:@"  " withString:@" "];
+    return [u componentsSeparatedByString:@" "];
+}
+- (BOOL)parseAsmRegister:(NSString*)token is64:(BOOL*)is64 reg:(uint32_t*)reg {
+    if(token.length<2)return NO;
+    unichar p=[token characterAtIndex:0];
+    if(p!='X'&&p!='W')return NO;
+    NSInteger n=[[token substringFromIndex:1] integerValue];
+    if(n<0||n>30)return NO;
+    if(is64)*is64=(p=='X');
+    if(reg)*reg=(uint32_t)n;
+    return YES;
+}
+- (BOOL)parseAsmImmediate:(NSString*)token value:(uint64_t*)value {
+    if(!token.length)return NO;
+    NSString *t=[token stringByReplacingOccurrencesOfString:@"#" withString:@""];
+    unsigned long long v=0;
+    NSScanner *sc=[NSScanner scannerWithString:t];
+    BOOL ok=[t.lowercaseString hasPrefix:@"0x"] ? [sc scanHexLongLong:&v] : [sc scanUnsignedLongLong:&v];
+    if(ok && sc.isAtEnd){if(value)*value=(uint64_t)v;return YES;}
+    return NO;
+}
+- (BOOL)encodeBranchTarget:(uint64_t)target from:(uint64_t)a bits:(int)bits imm:(uint32_t*)imm error:(NSString**)error {
+    int64_t diff=(int64_t)target-(int64_t)a;
+    if((diff&3)!=0){if(error)*error=@"分岐先は4バイト境界にしてください";return NO;}
+    int64_t q=diff/4;
+    int64_t min=-(1LL<<(bits-1)), max=(1LL<<(bits-1))-1;
+    if(q<min||q>max){if(error)*error=@"分岐先が命令の到達範囲外です";return NO;}
+    if(imm)*imm=(uint32_t)(q&((1ULL<<bits)-1));
+    return YES;
+}
+- (BOOL)assembleARM64:(NSString*)input at:(uint64_t)a word:(uint32_t*)outWord error:(NSString**)error {
+    NSString *trim=[input stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *hex=[trim stringByReplacingOccurrencesOfString:@"0x" withString:@"" options:NSCaseInsensitiveSearch range:NSMakeRange(0,trim.length)];
+    NSCharacterSet *nonHex=[[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdefABCDEF"] invertedSet];
+    if(hex.length==8 && [hex rangeOfCharacterFromSet:nonHex].location==NSNotFound){
+        unsigned int n=0; NSScanner *sc=[NSScanner scannerWithString:hex];
+        if([sc scanHexInt:&n]){if(outWord)*outWord=n;return YES;}
+    }
+
+    NSArray *t=[self asmTokens:trim];
+    if(t.count==0){if(error)*error=@"命令を入力してください";return NO;}
+    NSString *op=t[0];
+
+    if([op isEqualToString:@"NOP"] && t.count==1){if(outWord)*outWord=0xD503201F;return YES;}
+
+    if([op isEqualToString:@"RET"]){
+        uint32_t rn=30; BOOL x=YES;
+        if(t.count>1 && ![self parseAsmRegister:t[1] is64:&x reg:&rn]){if(error)*error=@"RETのレジスタ形式が不正です";return NO;}
+        if(!x){if(error)*error=@"RETはXレジスタを指定してください";return NO;}
+        if(outWord)*outWord=0xD65F0000|(rn<<5); return YES;
+    }
+
+    if([op isEqualToString:@"BR"]||[op isEqualToString:@"BLR"]){
+        if(t.count!=2){if(error)*error=@"BR/BLR Xn の形式で入力してください";return NO;}
+        uint32_t rn=0; BOOL x=NO;
+        if(![self parseAsmRegister:t[1] is64:&x reg:&rn]||!x){if(error)*error=@"BR/BLRはXレジスタです";return NO;}
+        if(outWord)*outWord=([op isEqualToString:@"BR"]?0xD61F0000:0xD63F0000)|(rn<<5); return YES;
+    }
+
+    if([op isEqualToString:@"B"]||[op isEqualToString:@"BL"]){
+        if(t.count!=2){if(error)*error=@"B/BL 0xADDRESS の形式で入力してください";return NO;}
+        uint64_t target=0; uint32_t imm=0;
+        if(![self parseAsmImmediate:t[1] value:&target]){if(error)*error=@"分岐先アドレスが不正です";return NO;}
+        if(![self encodeBranchTarget:target from:a bits:26 imm:&imm error:error])return NO;
+        if(outWord)*outWord=([op isEqualToString:@"B"]?0x14000000:0x94000000)|imm; return YES;
+    }
+
+    if([op isEqualToString:@"CBZ"]||[op isEqualToString:@"CBNZ"]){
+        if(t.count!=3){if(error)*error=@"CBZ/CBNZ Xn, 0xADDRESS の形式で入力してください";return NO;}
+        uint32_t rt=0,imm=0;BOOL x=NO;uint64_t target=0;
+        if(![self parseAsmRegister:t[1] is64:&x reg:&rt]){if(error)*error=@"レジスタが不正です";return NO;}
+        if(![self parseAsmImmediate:t[2] value:&target]){if(error)*error=@"分岐先アドレスが不正です";return NO;}
+        if(![self encodeBranchTarget:target from:a bits:19 imm:&imm error:error])return NO;
+        uint32_t base=x?0xB4000000:0x34000000;
+        if([op isEqualToString:@"CBNZ"])base|=0x01000000;
+        if(outWord)*outWord=base|(imm<<5)|rt; return YES;
+    }
+
+    if([op hasPrefix:@"B."]){
+        if(t.count!=2){if(error)*error=@"B.EQ 0xADDRESS の形式で入力してください";return NO;}
+        NSDictionary *conds=@{@"EQ":@0,@"NE":@1,@"CS":@2,@"HS":@2,@"CC":@3,@"LO":@3,@"MI":@4,@"PL":@5,@"VS":@6,@"VC":@7,@"HI":@8,@"LS":@9,@"GE":@10,@"LT":@11,@"GT":@12,@"LE":@13,@"AL":@14};
+        NSString *c=[op substringFromIndex:2]; NSNumber *cv=conds[c];
+        if(!cv){if(error)*error=@"未対応の条件コードです";return NO;}
+        uint64_t target=0;uint32_t imm=0;
+        if(![self parseAsmImmediate:t[1] value:&target]){if(error)*error=@"分岐先アドレスが不正です";return NO;}
+        if(![self encodeBranchTarget:target from:a bits:19 imm:&imm error:error])return NO;
+        if(outWord)*outWord=0x54000000|(imm<<5)|cv.unsignedIntValue; return YES;
+    }
+
+    if([op isEqualToString:@"MOV"]||[op isEqualToString:@"MOVZ"]||[op isEqualToString:@"MOVK"]){
+        if(t.count<3){if(error)*error=@"MOV/MOVZ/MOVK Xn,#imm の形式で入力してください";return NO;}
+        uint32_t rd=0;BOOL x=NO;uint64_t imm64=0;
+        if(![self parseAsmRegister:t[1] is64:&x reg:&rd]||![self parseAsmImmediate:t[2] value:&imm64]||imm64>0xFFFF){if(error)*error=@"immは0〜0xFFFFにしてください";return NO;}
+        uint32_t shift=0;
+        if(t.count>=5 && [t[3] isEqualToString:@"LSL"]){
+            uint64_t sh=0;if(![self parseAsmImmediate:t[4] value:&sh]||(sh%16)!=0||sh>(x?48:16)){if(error)*error=@"LSLは0/16/32/48（Wは0/16）です";return NO;}
+            shift=(uint32_t)(sh/16);
+        }
+        BOOL movk=[op isEqualToString:@"MOVK"];
+        uint32_t base=x?(movk?0xF2800000:0xD2800000):(movk?0x72800000:0x52800000);
+        if(outWord)*outWord=base|(shift<<21)|(((uint32_t)imm64&0xFFFF)<<5)|rd; return YES;
+    }
+
+    if([op isEqualToString:@"ADD"]||[op isEqualToString:@"SUB"]){
+        if(t.count<4){if(error)*error=@"ADD/SUB Xd,Xn,#imm の形式で入力してください";return NO;}
+        uint32_t rd=0,rn=0;BOOL x1=NO,x2=NO;uint64_t imm64=0;
+        if(![self parseAsmRegister:t[1] is64:&x1 reg:&rd]||![self parseAsmRegister:t[2] is64:&x2 reg:&rn]||x1!=x2){if(error)*error=@"Xd/Xn または Wd/Wn を揃えてください";return NO;}
+        if(![self parseAsmImmediate:t[3] value:&imm64]||imm64>4095){if(error)*error=@"ADD/SUB immediateは0〜4095です";return NO;}
+        uint32_t sh=0;
+        if(t.count>=6 && [t[4] isEqualToString:@"LSL"]){
+            uint64_t sv=0;if(![self parseAsmImmediate:t[5] value:&sv]||sv!=12){if(error)*error=@"ADD/SUBのLSLは#12のみ対応です";return NO;}sh=1;
+        }
+        uint32_t base=0;
+        if(x1)base=[op isEqualToString:@"ADD"]?0x91000000:0xD1000000;
+        else base=[op isEqualToString:@"ADD"]?0x11000000:0x51000000;
+        if(outWord)*outWord=base|(sh<<22)|(((uint32_t)imm64&0xFFF)<<10)|(rn<<5)|rd; return YES;
+    }
+
+    if(error)*error=@"未対応のARM64命令です。HEX(8桁)でも入力できます";
+    return NO;
+}
+- (uint64_t)currentIGGPatchAddress {
+    NSDictionary *m=[self currentModule];
+    if(!m)return 0;
+    return (H5XParseAddr(m[@"slide"])+H5XParseAddr(self.offsetField.text))&~3ULL;
+}
+- (void)applyLivePatchDirect {
+    uint64_t a=[self currentIGGPatchAddress];
+    if(!a){[self alert:@"モジュールとOffsetを確認してください"];return;}
+    uint32_t word=0; NSString *err=nil;
+    if(![self assembleARM64:self.patchInstructionField.text at:a word:&word error:&err]){
+        [self alert:err?:@"ARM64変換に失敗しました"];return;
+    }
+    [self applyPatch:a newWord:word];
+}
+
 - (BOOL)writeWord:(uint64_t)a word:(uint32_t)w {
     self.lastWriteStatus=@"";
     if(a==0 || (a&3ULL)!=0){
@@ -765,17 +905,21 @@ static uint64_t H5XParseAddr(NSString *s) {
 - (void)nopPressed:(UIButton*)b {[self applyPatch:H5XParseAddr(b.accessibilityValue) newWord:0xD503201F];}
 - (void)editWordPressed:(UIButton*)b {
     uint64_t a=H5XParseAddr(b.accessibilityValue); uint32_t w=[self readU32:a];
-    [self prompt:@"ARM64 U32 HEX (8桁)" value:[H5XHex32(w) substringFromIndex:2] completion:^(NSString *v){
-        NSScanner *sc=[NSScanner scannerWithString:v]; unsigned int n=0;
-        if(v.length!=8||![sc scanHexInt:&n]){[self alert:@"8桁の16進数で入力してください"];return;}
+    NSDictionary *d=[self decodeARM64:w address:a];
+    NSString *initial=d[@"asm"]?:[H5XHex32(w) substringFromIndex:2];
+    [self prompt:@"ARM64 / HEX 書き換え" value:initial completion:^(NSString *v){
+        uint32_t n=0; NSString *err=nil;
+        if(![self assembleARM64:v at:a word:&n error:&err]){
+            [self alert:err?:@"ARM64変換に失敗しました"];return;
+        }
         [self applyPatch:a newWord:n];
     }];
 }
 - (void)restorePressed:(UIButton*)b {[self restoreAddress:H5XParseAddr(b.accessibilityValue)];}
 - (void)followPressed:(UIButton*)b {
     uint64_t target=(uint64_t)b.accessibilityValue.longLongValue;
-    NSDictionary *m=[self currentModule]; uint64_t base=H5XParseAddr(m[@"start"]);
-    if(target>=base)self.offsetField.text=[NSString stringWithFormat:@"0x%llX",target-base];
+    NSDictionary *m=[self currentModule]; uint64_t slide=H5XParseAddr(m[@"slide"]);
+    if(target>=slide)self.offsetField.text=[NSString stringWithFormat:@"0x%llX",target-slide];
     [self readARM64];
 }
 - (void)restoreAddress:(uint64_t)a {
