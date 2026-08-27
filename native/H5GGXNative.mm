@@ -7,6 +7,14 @@
 #import <mach/mach_error.h>
 #import <libkern/OSCacheControl.h>
 
+extern "C" {
+    kern_return_t mach_vm_protect(vm_map_t target_task,
+                                  mach_vm_address_t address,
+                                  mach_vm_size_t size,
+                                  boolean_t set_maximum,
+                                  vm_prot_t new_protection);
+}
+
 extern FloatButton* floatBtn;
 extern h5ggEngine* h5gg;
 extern bool g_standalone_runmode;
@@ -87,7 +95,9 @@ static uint64_t H5XParseAddr(NSString *s) {
     self.modules=[NSMutableArray array];
     self.watchItems=[self loadArray:@"h5ggx.native.watch"];
     self.savedItems=[self loadArray:@"h5ggx.native.saved"];
-    self.patches=[self loadArray:@"h5ggx.native.patches"];
+    // Runtime patches are process-session state only. Never reuse stale originals after relaunch.
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"h5ggx.native.patches"];
+    self.patches=[NSMutableArray array];
 
     [self buildShell];
     [self buildSearchPage];
@@ -108,7 +118,6 @@ static uint64_t H5XParseAddr(NSString *s) {
     NSUserDefaults *d=[NSUserDefaults standardUserDefaults];
     [d setObject:self.watchItems forKey:@"h5ggx.native.watch"];
     [d setObject:self.savedItems forKey:@"h5ggx.native.saved"];
-    [d setObject:self.patches forKey:@"h5ggx.native.patches"];
     [d synchronize];
 }
 
@@ -332,7 +341,7 @@ static uint64_t H5XParseAddr(NSString *s) {
 
 - (void)buildARM64Page {
     UIScrollView *scroll=nil; UIStackView *s=[self pageStack:&scroll];
-    [self addTitle:@"ARM64 Analyzer" subtitle:@"非脱獄の同一プロセス向けMach VM書き込み。保護変更→書込→検証→命令キャッシュ更新→保護復元まで行います。" to:s];
+    [self addTitle:@"ARM64 Analyzer" subtitle:@"iGG互換Live Patch。RX復元まで成功した時だけ適用し、失敗時は元命令へ自動ロールバックします。" to:s];
 
     self.moduleButton=[self button:@"モジュールを選択" action:@selector(selectModule)];
     [s addArrangedSubview:self.moduleButton];
@@ -830,6 +839,58 @@ static uint64_t H5XParseAddr(NSString *s) {
     [self applyPatch:a newWord:word];
 }
 
+
+- (BOOL)getProtectionAt:(uint64_t)a protection:(vm_prot_t*)protection maxProtection:(vm_prot_t*)maxProtection {
+    vm_address_t q=(vm_address_t)a;
+    vm_size_t size=0;
+    vm_region_basic_info_data_64_t info={0};
+    mach_msg_type_number_t count=VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t objectName=MACH_PORT_NULL;
+    kern_return_t kr=vm_region_64(mach_task_self(),
+                                 &q,
+                                 &size,
+                                 VM_REGION_BASIC_INFO_64,
+                                 (vm_region_info_t)&info,
+                                 &count,
+                                 &objectName);
+    if(objectName!=MACH_PORT_NULL) mach_port_deallocate(mach_task_self(),objectName);
+    if(kr!=KERN_SUCCESS || (vm_address_t)a<q || (vm_address_t)a>=q+size)return NO;
+    if(protection)*protection=info.protection;
+    if(maxProtection)*maxProtection=info.max_protection;
+    return YES;
+}
+- (BOOL)protectionAt:(uint64_t)a contains:(vm_prot_t)required {
+    vm_prot_t p=0;
+    return [self getProtectionAt:a protection:&p maxProtection:NULL] && ((p&required)==required);
+}
+- (kern_return_t)restoreProtectionAt:(uint64_t)a protection:(vm_prot_t)protection {
+    // First mirror iGG's exact-address restore.
+    kern_return_t kr=vm_protect(mach_task_self(),
+                                (vm_address_t)a,
+                                sizeof(uint32_t),
+                                false,
+                                protection);
+    if(kr==KERN_SUCCESS)return kr;
+
+    // Fallback: restore the complete page using the 64-bit Mach entry point.
+    mach_vm_size_t page=(mach_vm_size_t)vm_page_size;
+    mach_vm_address_t pageStart=((mach_vm_address_t)a)&~(page-1);
+    kr=mach_vm_protect(mach_task_self(),
+                       pageStart,
+                       page,
+                       false,
+                       protection);
+    return kr;
+}
+- (BOOL)rawWriteWord:(uint64_t)a word:(uint32_t)w {
+    kern_return_t kr=vm_write(mach_task_self(),
+                              (vm_address_t)a,
+                              (vm_offset_t)&w,
+                              sizeof(w));
+    if(kr!=KERN_SUCCESS)return NO;
+    sys_icache_invalidate((void*)a,sizeof(w));
+    return YES;
+}
 - (BOOL)writeWord:(uint64_t)a word:(uint32_t)w {
     self.lastWriteStatus=@"";
     if(a==0 || (a&3ULL)!=0){
@@ -841,55 +902,89 @@ static uint64_t H5XParseAddr(NSString *s) {
         return NO;
     }
 
-    mach_port_t port=mach_task_self();
-
-    // iGameGod public template compatibility:
-    // vm_protect(address, sizeof(data), R|W|COPY) -> vm_write -> R|X
-    kern_return_t err=vm_protect(port,
-                                 (vm_address_t)a,
-                                 sizeof(uint32_t),
-                                 false,
-                                 VM_PROT_READ|VM_PROT_WRITE|VM_PROT_COPY);
-    if(err!=KERN_SUCCESS){
-        self.lastWriteStatus=[NSString stringWithFormat:@"iGG vm_protect RW|COPY 失敗: %d (%s)",err,mach_error_string(err)];
+    vm_prot_t originalProt=0,maxProt=0;
+    if(![self getProtectionAt:a protection:&originalProt maxProtection:&maxProt]){
+        self.lastWriteStatus=@"対象ページのProtectionを取得できません";
+        return NO;
+    }
+    if((originalProt&VM_PROT_EXECUTE)==0){
+        self.lastWriteStatus=[NSString stringWithFormat:@"ARM64コードページではありません (Protection=0x%x)",originalProt];
         return NO;
     }
 
-    // iGG's public patch routine receives memory-byte-order hex and swaps it.
-    // H5GGX UI displays the normal ARM64 encoding, so convert to iGG input form
-    // and perform the same CFSwapInt32 step before vm_write.
-    uint32_t iggInput=CFSwapInt32(w);
-    uint32_t data=CFSwapInt32(iggInput);
+    uint32_t originalWord=[self readU32:a];
 
-    err=vm_write(port,
-                 (vm_address_t)a,
-                 (vm_offset_t)&data,
-                 sizeof(data));
-    if(err!=KERN_SUCCESS){
-        vm_protect(port,(vm_address_t)a,sizeof(data),false,VM_PROT_READ|VM_PROT_EXECUTE);
-        self.lastWriteStatus=[NSString stringWithFormat:@"iGG vm_write失敗: %d (%s)",err,mach_error_string(err)];
+    // iGameGod-compatible write transition.
+    kern_return_t rwKr=vm_protect(mach_task_self(),
+                                  (vm_address_t)a,
+                                  sizeof(uint32_t),
+                                  false,
+                                  VM_PROT_READ|VM_PROT_WRITE|VM_PROT_COPY);
+    if(rwKr!=KERN_SUCCESS){
+        self.lastWriteStatus=[NSString stringWithFormat:@"iGG vm_protect RW|COPY 失敗: %d (%s)\nProtection=0x%x Max=0x%x",
+                              rwKr,mach_error_string(rwKr),originalProt,maxProt];
         return NO;
     }
 
-    sys_icache_invalidate((void*)a,sizeof(data));
+    if(![self rawWriteWord:a word:w]){
+        kern_return_t restoreKr=[self restoreProtectionAt:a protection:originalProt];
+        self.lastWriteStatus=[NSString stringWithFormat:@"iGG vm_write失敗。Protection復元=%d (%s)",
+                              restoreKr,mach_error_string(restoreKr)];
+        return NO;
+    }
 
-    kern_return_t restoreErr=vm_protect(port,
-                                        (vm_address_t)a,
-                                        sizeof(data),
-                                        false,
-                                        VM_PROT_READ|VM_PROT_EXECUTE);
+    kern_return_t restoreKr=[self restoreProtectionAt:a protection:originalProt];
+    BOOL execRestored=(restoreKr==KERN_SUCCESS) &&
+                      [self protectionAt:a contains:(originalProt&VM_PROT_EXECUTE)];
+
+    if(!execRestored){
+        // Do not ever treat a patch as successful while the code page is non-executable.
+        // Roll the instruction back while the page is still writable, then restore RX again.
+        vm_protect(mach_task_self(),
+                   (vm_address_t)a,
+                   sizeof(uint32_t),
+                   false,
+                   VM_PROT_READ|VM_PROT_WRITE|VM_PROT_COPY);
+
+        BOOL rollbackWrite=[self rawWriteWord:a word:originalWord];
+        kern_return_t rollbackProtect=[self restoreProtectionAt:a protection:originalProt];
+        BOOL rollbackExec=(rollbackProtect==KERN_SUCCESS) &&
+                          [self protectionAt:a contains:(originalProt&VM_PROT_EXECUTE)];
+        uint32_t rollbackVerify=[self readU32:a];
+
+        if(rollbackWrite && rollbackExec && rollbackVerify==originalWord){
+            self.lastWriteStatus=[NSString stringWithFormat:
+                @"PATCH中止: RX復元に失敗したため元命令へ自動復元しました\nrestore=%d (%s)\nProtection=0x%x Max=0x%x",
+                restoreKr,mach_error_string(restoreKr),originalProt,maxProt];
+        }else{
+            self.lastWriteStatus=[NSString stringWithFormat:
+                @"危険: RX復元失敗後の自動復元も完全には確認できません\nrestore=%d (%s)\nrollbackWrite=%@\nrollbackProtect=%d (%s)\nProtection=0x%x Max=0x%x\nアプリを再起動してください",
+                restoreKr,mach_error_string(restoreKr),
+                rollbackWrite?@"OK":@"NG",
+                rollbackProtect,mach_error_string(rollbackProtect),
+                originalProt,maxProt];
+        }
+        return NO;
+    }
 
     uint32_t verify=[self readU32:a];
     if(verify!=w){
-        self.lastWriteStatus=[NSString stringWithFormat:@"iGG書込検証失敗: expected=%@ got=%@",H5XHex32(w),H5XHex32(verify)];
+        // The page is executable again, but the data did not stick. Revert transactionally.
+        vm_protect(mach_task_self(),
+                   (vm_address_t)a,
+                   sizeof(uint32_t),
+                   false,
+                   VM_PROT_READ|VM_PROT_WRITE|VM_PROT_COPY);
+        [self rawWriteWord:a word:originalWord];
+        [self restoreProtectionAt:a protection:originalProt];
+        self.lastWriteStatus=[NSString stringWithFormat:@"書込検証失敗のため元命令へ戻しました expected=%@ got=%@",
+                              H5XHex32(w),H5XHex32(verify)];
         return NO;
     }
-    if(restoreErr!=KERN_SUCCESS){
-        self.lastWriteStatus=[NSString stringWithFormat:@"iGG書込成功 / RX復元失敗: %d (%s)",restoreErr,mach_error_string(restoreErr)];
-        return YES;
-    }
 
-    self.lastWriteStatus=[NSString stringWithFormat:@"iGG PATCH OK  %@",H5XHex32(w)];
+    self.lastWriteStatus=[NSString stringWithFormat:
+                          @"iGG PATCH OK %@  Protection 0x%x / Max 0x%x",
+                          H5XHex32(w),originalProt,maxProt];
     return YES;
 }
 - (void)applyPatch:(uint64_t)a newWord:(uint32_t)nw {
@@ -973,7 +1068,7 @@ static uint64_t H5XParseAddr(NSString *s) {
 }
 
 - (void)showDiag {
-    NSString *s=[NSString stringWithFormat:@"Native UI: OK\nEngine: %@\nPID: %d / Target: %d\nPatchMode: iGG vm_protect(RW|COPY) -> vm_write -> RX\nResults: %ld\nModules: %lu\nPatches: %lu\nLastPatch: %@\nWindow: %.0fx%.0f",
+    NSString *s=[NSString stringWithFormat:@"Native UI: OK\nEngine: %@\nPID: %d / Target: %d\nPatchMode: iGG transactional RW|COPY -> write -> RX -> verify\nResults: %ld\nModules: %lu\nPatches: %lu\nLastPatch: %@\nWindow: %.0fx%.0f",
                  h5gg?@"OK":@"NG",getpid(),h5gg.targetpid,[h5gg getResultsCount],(unsigned long)self.modules.count,(unsigned long)self.patches.count,
                  self.lastWriteStatus.length?self.lastWriteStatus:@"未実行",
                  H5XWindow.bounds.size.width,H5XWindow.bounds.size.height];
