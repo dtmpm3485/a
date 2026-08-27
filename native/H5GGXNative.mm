@@ -333,7 +333,7 @@ static uint64_t H5XParseAddr(NSString *s) {
     [s addArrangedSubview:[self button:@"モジュール再取得" action:@selector(loadModules)]];
 
     self.moduleInfo=[self label:@"未取得" size:10 color:H5XColor(153,177,215)];
-    self.moduleInfo.font=H5XMono(10 weight:UIFontWeightRegular);
+    self.moduleInfo.font=H5XMono(10);
     [s addArrangedSubview:self.moduleInfo];
 
     self.offsetField=[self field:@"Offset 例: 0x123456" value:@"0x0"];
@@ -360,7 +360,7 @@ static uint64_t H5XParseAddr(NSString *s) {
     self.hexView.scrollEnabled=YES;
     self.hexView.backgroundColor=H5XColor(7,14,23);
     self.hexView.textColor=H5XColor(198,211,232);
-    self.hexView.font=H5XMono(9 weight:UIFontWeightRegular);
+    self.hexView.font=H5XMono(9);
     self.hexView.layer.cornerRadius=9;
     self.hexView.heightAnchor.constraintEqualToConstant(190).active=YES;
     [s addArrangedSubview:self.hexView];
@@ -657,7 +657,7 @@ static uint64_t H5XParseAddr(NSString *s) {
     [NSLayoutConstraint activateConstraints:@[[s.leadingAnchor constraintEqualToAnchor:c.leadingAnchor constant:9],[s.trailingAnchor constraintEqualToAnchor:c.trailingAnchor constant:-9],[s.topAnchor constraintEqualToAnchor:c.topAnchor constant:8],[s.bottomAnchor constraintEqualToAnchor:c.bottomAnchor constant:-8]]];
     UILabel *loc=[self label:[self moduleOffset:a] size:10 color:H5XColor(142,171,217)];loc.font=[UIFont monospacedDigitSystemFontOfSize:10 weight:UIFontWeightRegular];
     UILabel *hex=[self label:H5XHex32(w) size:10 color:H5XColor(238,193,116)];hex.font=[UIFont monospacedDigitSystemFontOfSize:10 weight:UIFontWeightRegular];
-    UILabel *asmL=[self label:d[@"asm"] size:11 color:H5XColor(221,231,246)];asmL.font=H5XMono(11 weight:UIFontWeightRegular);
+    UILabel *asmL=[self label:d[@"asm"] size:11 color:H5XColor(221,231,246)];asmL.font=H5XMono(11);
     [s addArrangedSubview:loc];[s addArrangedSubview:hex];[s addArrangedSubview:asmL];
     UIButton *nop=[self button:@"NOP" action:@selector(nopPressed:)];nop.accessibilityValue=H5XAddr(a);
     UIButton *edit=[self button:@"編集" action:@selector(editWordPressed:)];edit.accessibilityValue=H5XAddr(a);
