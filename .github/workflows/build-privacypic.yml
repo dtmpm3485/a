@@ -1,0 +1,102 @@
+name: Build PrivacyPic Windows
+
+on:
+  push:
+    branches:
+      - privacypic-build
+    paths:
+      - "PrivacyPic/**"
+      - ".github/workflows/build-privacypic.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Generate offline signing keypair
+        run: |
+          $rsa = [System.Security.Cryptography.RSA]::Create()
+          $rsa.KeySize = 3072
+          $publicPem = $rsa.ExportSubjectPublicKeyInfoPem()
+          $privatePem = $rsa.ExportPkcs8PrivateKeyPem()
+
+          $appLicense = "PrivacyPic/src/PrivacyPic.App/LicenseService.cs"
+          $generatorSigner = "PrivacyPic/src/PrivacyPic.LicenseGenerator/LicenseSigner.cs"
+
+          $appText = Get-Content -Raw -Encoding UTF8 $appLicense
+          $appText = $appText.Replace("__PUBLIC_KEY_PEM__", $publicPem)
+          Set-Content -Path $appLicense -Encoding UTF8 -NoNewline -Value $appText
+
+          $generatorText = Get-Content -Raw -Encoding UTF8 $generatorSigner
+          $generatorText = $generatorText.Replace("__PRIVATE_KEY_PEM__", $privatePem)
+          Set-Content -Path $generatorSigner -Encoding UTF8 -NoNewline -Value $generatorText
+
+          New-Item -ItemType Directory -Force "PrivacyPic/out/OwnerSecrets" | Out-Null
+          Set-Content -Path "PrivacyPic/out/OwnerSecrets/PrivacyPic-public-key.pem" -Encoding ASCII -NoNewline -Value $publicPem
+          Set-Content -Path "PrivacyPic/out/OwnerSecrets/PrivacyPic-private-key-BACKUP.pem" -Encoding ASCII -NoNewline -Value $privatePem
+
+      - name: Build Rust metadata core
+        working-directory: PrivacyPic/src/PrivacyPic.Core
+        run: |
+          rustc --version
+          cargo build --release
+
+      - name: Publish PrivacyPic
+        run: |
+          dotnet publish PrivacyPic/src/PrivacyPic.App/PrivacyPic.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o PrivacyPic/out/App
+          Copy-Item PrivacyPic/src/PrivacyPic.Core/target/release/privacypic_core.dll PrivacyPic/out/App/privacypic_core.dll
+
+      - name: Publish License Generator
+        run: |
+          dotnet publish PrivacyPic/src/PrivacyPic.LicenseGenerator/PrivacyPic.LicenseGenerator.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o PrivacyPic/out/Generator
+
+      - name: Prepare packages
+        run: |
+          New-Item -ItemType Directory -Force PrivacyPic/pkg/User | Out-Null
+          New-Item -ItemType Directory -Force PrivacyPic/pkg/Owner | Out-Null
+
+          Copy-Item PrivacyPic/out/App/PrivacyPic.exe PrivacyPic/pkg/User/PrivacyPic.exe
+          Copy-Item PrivacyPic/out/App/privacypic_core.dll PrivacyPic/pkg/User/privacypic_core.dll
+          Copy-Item PrivacyPic/README.md PrivacyPic/pkg/User/README.md
+
+          Copy-Item PrivacyPic/out/Generator/PrivacyPicLicenseGenerator.exe PrivacyPic/pkg/Owner/PrivacyPicLicenseGenerator.exe
+          Copy-Item PrivacyPic/out/OwnerSecrets/PrivacyPic-public-key.pem PrivacyPic/pkg/Owner/PrivacyPic-public-key.pem
+          Copy-Item PrivacyPic/out/OwnerSecrets/PrivacyPic-private-key-BACKUP.pem PrivacyPic/pkg/Owner/PrivacyPic-private-key-BACKUP.pem
+
+          $important = @(
+            "PRIVATE PACKAGE",
+            "",
+            "PrivacyPicLicenseGenerator.exe と PrivacyPic-private-key-BACKUP.pem は",
+            "購入者・第三者へ絶対に配布しないでください。",
+            "",
+            "購入者へ渡すもの:",
+            "- PrivacyPic.exe",
+            "- privacypic_core.dll",
+            "- 購入後にあなたが発行した .lic ファイル"
+          )
+          Set-Content -Path PrivacyPic/pkg/Owner/IMPORTANT.txt -Encoding UTF8 -Value $important
+
+          Compress-Archive -Path PrivacyPic/pkg/User/* -DestinationPath PrivacyPic/PrivacyPic-Windows-x64.zip -Force
+          Compress-Archive -Path PrivacyPic/pkg/Owner/* -DestinationPath PrivacyPic/PrivacyPic-LicenseGenerator-PRIVATE.zip -Force
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrivacyPic-Windows-Build
+          path: |
+            PrivacyPic/PrivacyPic-Windows-x64.zip
+            PrivacyPic/PrivacyPic-LicenseGenerator-PRIVATE.zip
+          if-no-files-found: error
