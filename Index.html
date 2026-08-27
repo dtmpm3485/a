@@ -2,75 +2,156 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
 <title>H5GGX</title>
 <link rel="stylesheet" href="src/style.css">
+<script>
+window.H5XBootOK = true;
+function H5XTap(tab){ if(window.H5X && H5X.tab){ H5X.tab(tab); } else { alert("H5GGX JSの読み込みに失敗しています"); } }
+</script>
 </head>
 <body>
-<header class="topbar">
-  <div class="brand"><strong>H5GGX</strong><span id="mode" class="badge">checking</span></div>
-  <button id="helpBtn" class="ghost">使い方</button>
-</header>
+<div id="scrollRoot">
+  <header id="dragBar" class="topbar">
+    <div>
+      <b>H5GGX</b>
+      <span id="mode" class="badge">BOOT</span>
+    </div>
+    <button class="headBtn" onclick="H5X.diag()">診断</button>
+  </header>
 
-<main>
-<section id="helpCard" class="helpCard">
-  <div class="helpTitle">最初に</div>
-  <div class="helpText">下のメニューから機能を選びます。ARM64を使う場合は「ARM64 → モジュール選択 → offset入力 → 読む」の順です。</div>
-</section>
+  <main>
+    <div id="notice" class="notice">
+      <b>使い方</b>
+      <div>下のメニューで機能を切り替えます。画面は上下にスクロールできます。</div>
+    </div>
 
-<nav class="tabs" aria-label="メニュー">
-  <button data-tab="results" class="active"><span>検索</span><small>値検索</small></button>
-  <button data-tab="arm64"><span>ARM64</span><small>命令編集</small></button>
-  <button data-tab="watch"><span>監視</span><small>リアルタイム</small></button>
-  <button data-tab="bookmarks"><span>保存</span><small>ブックマーク</small></button>
-  <button data-tab="history"><span>履歴</span><small>再検索</small></button>
+    <section id="results" class="panel active">
+      <h2>値検索</h2>
+      <p class="desc">例: HPが100なら検索値に <b>100</b> を入力して検索します。</p>
+
+      <label class="fieldLabel">検索値</label>
+      <input id="value" type="text" inputmode="decimal" placeholder="例: 100">
+
+      <label class="fieldLabel">データ型</label>
+      <select id="type">
+        <option value="I32">I32</option>
+        <option value="I64">I64</option>
+        <option value="F32">F32</option>
+        <option value="F64">F64</option>
+        <option value="I16">I16</option>
+        <option value="I8">I8</option>
+        <option value="U32">U32</option>
+        <option value="U64">U64</option>
+      </select>
+
+      <details>
+        <summary>検索範囲</summary>
+        <label class="fieldLabel">開始</label>
+        <input id="rangeStart" value="0x000000000">
+        <label class="fieldLabel">終了</label>
+        <input id="rangeEnd" value="0x200000000">
+      </details>
+
+      <div class="buttonRow">
+        <button class="primary" onclick="H5X.search()">検索</button>
+        <button onclick="H5X.nearby()">Nearby</button>
+        <button onclick="H5X.clearResults()">クリア</button>
+      </div>
+
+      <div class="separator"></div>
+      <div class="buttonRow">
+        <button onclick="H5X.snapshot()">Snapshot</button>
+        <button onclick="H5X.refreshResults()">値更新</button>
+      </div>
+
+      <input id="filter" type="text" placeholder="結果のアドレス/値を絞り込み" oninput="H5X.renderResults()">
+      <select id="diffMode" onchange="H5X.renderResults()">
+        <option value="all">全部</option>
+        <option value="changed">Changed</option>
+        <option value="unchanged">Unchanged</option>
+        <option value="increased">Increased</option>
+        <option value="decreased">Decreased</option>
+      </select>
+
+      <div id="resultList" class="list"></div>
+
+      <div class="bulkBox">
+        <input id="bulkValue" type="text" placeholder="チェックした結果の新しい値">
+        <button onclick="H5X.bulkSet()">一括編集</button>
+      </div>
+    </section>
+
+    <section id="arm64" class="panel">
+      <h2>ARM64</h2>
+      <p class="desc">選んだMach-Oの <b>module + offset</b> を実行時に読みます。変更はランタイムのみです。</p>
+
+      <div class="step"><span>1</span><div><b>モジュールを選択</b><small>メイン実行ファイル / Framework / dylib</small></div></div>
+      <select id="moduleSelect" onchange="H5X.moduleChanged()"></select>
+      <button onclick="H5X.loadModules()">モジュール一覧を更新</button>
+      <pre id="moduleInfo" class="moduleInfo">未取得</pre>
+
+      <div class="step"><span>2</span><div><b>Offsetを入力</b><small>例: 0x123456</small></div></div>
+      <input id="armOffset" type="text" value="0x0" placeholder="0x123456">
+
+      <div class="step"><span>3</span><div><b>命令を読む</b><small>NOP / 任意HEX編集 / 復元ができます</small></div></div>
+      <div class="miniGrid">
+        <label>命令数</label>
+        <input id="armCount" type="number" value="24" min="1" max="128">
+      </div>
+      <button class="primary bigBtn" onclick="H5X.readArmOffset()">このOffsetのARM64を読む</button>
+
+      <details>
+        <summary>絶対アドレスを直接読む</summary>
+        <input id="absoluteAddress" type="text" placeholder="0x100123456">
+        <button onclick="H5X.readArmAbsolute()">絶対アドレスを読む</button>
+      </details>
+
+      <div id="armCurrent" class="currentAddr"></div>
+      <div id="armList" class="list"></div>
+
+      <h3>Runtime Patch</h3>
+      <div id="patchList" class="list"></div>
+
+      <h3>Hex Viewer</h3>
+      <p class="desc">現在のARM64開始位置からバイト列を表示します。</p>
+      <div class="miniGrid">
+        <label>長さ</label>
+        <input id="hexLength" type="number" min="16" max="512" value="128">
+      </div>
+      <button onclick="H5X.readHex()">Hexを表示</button>
+      <div id="hexDump" class="hexDump"></div>
+    </section>
+
+    <section id="watch" class="panel">
+      <h2>監視</h2>
+      <p class="desc">検索結果の「監視」を押したアドレスを約1秒ごとに更新します。</p>
+      <div id="watchList" class="list"></div>
+    </section>
+
+    <section id="bookmarks" class="panel">
+      <h2>保存</h2>
+      <p class="desc">よく使うアドレスを保存します。</p>
+      <div id="bookmarkList" class="list"></div>
+    </section>
+
+    <section id="history" class="panel">
+      <h2>履歴</h2>
+      <p class="desc">過去の検索条件を復元できます。</p>
+      <div id="historyList" class="list"></div>
+    </section>
+  </main>
+</div>
+
+<nav class="tabs">
+  <button id="tab_results" class="active" onclick="H5XTap('results')"><b>検索</b><small>Search</small></button>
+  <button id="tab_arm64" onclick="H5XTap('arm64')"><b>ARM64</b><small>Patch</small></button>
+  <button id="tab_watch" onclick="H5XTap('watch')"><b>監視</b><small>Watch</small></button>
+  <button id="tab_bookmarks" onclick="H5XTap('bookmarks')"><b>保存</b><small>Save</small></button>
+  <button id="tab_history" onclick="H5XTap('history')"><b>履歴</b><small>History</small></button>
 </nav>
 
-<section id="results" class="panel active">
-  <h2>値検索</h2>
-  <p class="desc">ゲーム/アプリ内の数値を検索します。例: HPが100なら「100」を入力。</p>
-  <div class="field"><label>検索値</label><input id="value" inputmode="decimal" placeholder="例: 100"></div>
-  <div class="field"><label>型</label><select id="type"><option>I32</option><option>I64</option><option>F32</option><option>F64</option><option>I16</option><option>I8</option></select></div>
-  <details>
-    <summary>検索範囲を指定</summary>
-    <div class="field"><label>開始</label><input id="rangeStart" value="0x000000000"></div>
-    <div class="field"><label>終了</label><input id="rangeEnd" value="0x200000000"></div>
-  </details>
-  <div class="actions"><button id="searchBtn" class="primary">検索</button><button id="nearBtn">Nearby</button><button id="clearBtn">クリア</button></div>
-  <div class="toolbar"><input id="filter" placeholder="結果を絞り込み"><select id="diffMode"><option value="all">全部</option><option value="changed">Changed</option><option value="unchanged">Unchanged</option><option value="increased">Increased</option><option value="decreased">Decreased</option></select></div>
-  <div class="actions compact"><button id="snapshotBtn">Snapshot</button><button id="refreshBtn">値を更新</button></div>
-  <div id="resultList" class="list"></div>
-  <div class="bulkbar"><input id="bulkValue" placeholder="選択した結果の新しい値"><button id="bulkSetBtn">一括編集</button></div>
-</section>
-
-<section id="arm64" class="panel">
-  <h2>ARM64 ランタイム編集</h2>
-  <p class="desc">実行中メモリのARM64命令を読み、ランタイム上だけ変更します。アプリ再起動で元に戻ります。</p>
-  <div class="step"><b>1</b><div><strong>モジュールを選択</strong><small>メイン実行ファイルやFrameworkを選びます。</small></div></div>
-  <div class="field"><label>モジュール</label><select id="moduleSelect"></select></div>
-  <button id="reloadModulesBtn" class="wide">モジュール一覧を更新</button>
-  <div id="moduleInfo" class="moduleInfo"></div>
-
-  <div class="step"><b>2</b><div><strong>offset またはアドレスを指定</strong><small>例: 0x123456 または GameCore+0x123456</small></div></div>
-  <div class="field"><label>Offset / Address</label><input id="armAddress" placeholder="例: 0x123456"></div>
-  <div class="field"><label>表示する命令数</label><input id="armCount" type="number" min="1" max="128" value="24"></div>
-  <div class="actions"><button id="armOffsetBtn">選択モジュール + Offset</button><button id="armUseModuleBtn">Module先頭</button></div>
-
-  <div class="step"><b>3</b><div><strong>命令を読む</strong><small>各行の NOP / 編集 / 戻す でランタイム変更できます。</small></div></div>
-  <button id="armReadBtn" class="primary wide">ARM64を読む</button>
-  <div id="armList" class="list armList"></div>
-</section>
-
-<section id="watch" class="panel">
-  <h2>監視</h2><p class="desc">検索結果の「監視」を押したアドレスを1秒ごとに更新します。</p><div id="watchList" class="list"></div>
-</section>
-<section id="bookmarks" class="panel">
-  <h2>保存</h2><p class="desc">よく使うアドレスを保存します。</p><div id="bookmarkList" class="list"></div>
-</section>
-<section id="history" class="panel">
-  <h2>検索履歴</h2><p class="desc">以前の検索条件をワンタップで復元します。</p><div id="historyList" class="list"></div>
-</section>
-</main>
 <script src="src/h5ggx.js"></script>
 </body>
 </html>
