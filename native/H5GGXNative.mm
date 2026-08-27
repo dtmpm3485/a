@@ -1,6 +1,10 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <mach-o/dyld.h>
+#import <mach/mach.h>
+#import <mach/mach_vm.h>
+#import <mach/vm_region.h>
+#import <mach/mach_error.h>
 #import <libkern/OSCacheControl.h>
 
 extern FloatButton* floatBtn;
@@ -66,6 +70,7 @@ static uint64_t H5XParseAddr(NSString *s) {
 @property(nonatomic,strong) NSMutableArray *patches;
 @property(nonatomic,strong) UIStackView *patchStack;
 @property(nonatomic,strong) NSTimer *watchTimer;
+@property(nonatomic,strong) NSString *lastWriteStatus;
 @end
 
 @implementation H5GGXNativeController
@@ -326,7 +331,7 @@ static uint64_t H5XParseAddr(NSString *s) {
 
 - (void)buildARM64Page {
     UIScrollView *scroll=nil; UIStackView *s=[self pageStack:&scroll];
-    [self addTitle:@"ARM64 Analyzer" subtitle:@"Mach-O + Offsetを解決して実行中コードを読み、ランタイムだけ変更します。" to:s];
+    [self addTitle:@"ARM64 Analyzer" subtitle:@"非脱獄の同一プロセス向けMach VM書き込み。保護変更→書込→検証→命令キャッシュ更新→保護復元まで行います。" to:s];
 
     self.moduleButton=[self button:@"モジュールを選択" action:@selector(selectModule)];
     [s addArrangedSubview:self.moduleButton];
@@ -668,13 +673,100 @@ static uint64_t H5XParseAddr(NSString *s) {
     return c;
 }
 - (BOOL)writeWord:(uint64_t)a word:(uint32_t)w {
-    BOOL ok=[h5gg setValue:H5XAddr(a) param2:[NSString stringWithFormat:@"%u",w] param3:@"U32"];
-    if(ok)sys_icache_invalidate((void*)a,4);
-    return ok;
+    self.lastWriteStatus=@"";
+    if(a==0 || (a&3ULL)!=0){
+        self.lastWriteStatus=@"アドレスが4バイト境界ではありません";
+        return NO;
+    }
+    if(h5gg.targetpid!=0 && h5gg.targetpid!=getpid()){
+        self.lastWriteStatus=@"非脱獄Mach VMパッチは同一プロセス専用です";
+        return NO;
+    }
+
+    task_t task=mach_task_self();
+    mach_vm_address_t query=(mach_vm_address_t)a;
+    mach_vm_size_t regionSize=0;
+    vm_region_basic_info_data_64_t info={0};
+    mach_msg_type_number_t infoCount=VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t objectName=MACH_PORT_NULL;
+
+    kern_return_t kr=mach_vm_region(task,
+                                    &query,
+                                    &regionSize,
+                                    VM_REGION_BASIC_INFO_64,
+                                    (vm_region_info_t)&info,
+                                    &infoCount,
+                                    &objectName);
+    if(objectName!=MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), objectName);
+    if(kr!=KERN_SUCCESS || (mach_vm_address_t)a<query || (mach_vm_address_t)a>=query+regionSize){
+        self.lastWriteStatus=[NSString stringWithFormat:@"mach_vm_region失敗: %d (%s)",kr,mach_error_string(kr)];
+        return NO;
+    }
+
+    vm_prot_t original=info.protection;
+    vm_size_t pageSize=(vm_size_t)vm_page_size;
+    mach_vm_address_t pageStart=((mach_vm_address_t)a)&~((mach_vm_address_t)pageSize-1);
+    mach_vm_size_t protectSize=pageSize;
+    BOOL changedProtection=NO;
+
+    if((original&VM_PROT_WRITE)==0){
+        vm_prot_t desired=original|VM_PROT_WRITE|VM_PROT_COPY;
+        kr=mach_vm_protect(task,pageStart,protectSize,FALSE,desired);
+        if(kr!=KERN_SUCCESS){
+            // Some non-jailbroken builds reject W+X. Temporarily drop EXECUTE,
+            // write to the COW page, then restore the exact original protection.
+            desired=VM_PROT_READ|VM_PROT_WRITE|VM_PROT_COPY;
+            kr=mach_vm_protect(task,pageStart,protectSize,FALSE,desired);
+        }
+        if(kr!=KERN_SUCCESS){
+            self.lastWriteStatus=[NSString stringWithFormat:@"ページを書込可能にできません: %d (%s)\n元Protection=0x%x",kr,mach_error_string(kr),original];
+            return NO;
+        }
+        changedProtection=YES;
+    }
+
+    kr=mach_vm_write(task,
+                     (mach_vm_address_t)a,
+                     (vm_offset_t)&w,
+                     (mach_msg_type_number_t)sizeof(w));
+    if(kr!=KERN_SUCCESS){
+        if(changedProtection) mach_vm_protect(task,pageStart,protectSize,FALSE,original);
+        self.lastWriteStatus=[NSString stringWithFormat:@"mach_vm_write失敗: %d (%s)",kr,mach_error_string(kr)];
+        return NO;
+    }
+
+    uint32_t verify=0;
+    mach_vm_size_t outSize=0;
+    kern_return_t readKr=mach_vm_read_overwrite(task,
+                                                (mach_vm_address_t)a,
+                                                sizeof(verify),
+                                                (mach_vm_address_t)&verify,
+                                                &outSize);
+
+    sys_icache_invalidate((void*)a,sizeof(w));
+    __builtin___clear_cache((char*)a,(char*)a+sizeof(w));
+
+    kern_return_t restoreKr=KERN_SUCCESS;
+    if(changedProtection){
+        restoreKr=mach_vm_protect(task,pageStart,protectSize,FALSE,original);
+    }
+
+    if(readKr!=KERN_SUCCESS || outSize!=sizeof(verify) || verify!=w){
+        self.lastWriteStatus=[NSString stringWithFormat:@"書込検証失敗: read=%d size=%llu got=%@",readKr,outSize,H5XHex32(verify)];
+        return NO;
+    }
+    if(restoreKr!=KERN_SUCCESS){
+        self.lastWriteStatus=[NSString stringWithFormat:@"書込成功。ただしProtection復元失敗: %d (%s)",restoreKr,mach_error_string(restoreKr)];
+        return YES;
+    }
+
+    self.lastWriteStatus=[NSString stringWithFormat:@"Mach VM PATCH OK  %@  Protection 0x%x",H5XHex32(w),original];
+    return YES;
 }
 - (void)applyPatch:(uint64_t)a newWord:(uint32_t)nw {
     uint32_t old=[self readU32:a];
-    if(![self writeWord:a word:nw]){[self alert:@"ランタイム書き込みに失敗しました"];return;}
+    if(![self writeWord:a word:nw]){[self alert:[NSString stringWithFormat:@"ランタイム書き込みに失敗しました\n\n%@",self.lastWriteStatus?:@"不明なエラー"]];return;}
+    self.armStatus.text=[NSString stringWithFormat:@"PATCH OK  %@  →  %@",[self moduleOffset:a],H5XHex32(nw)];
     NSMutableDictionary *found=nil;
     for(NSMutableDictionary *p in self.patches)if(H5XParseAddr(p[@"address"])==a){found=p;break;}
     if(found)found[@"current"]=@(nw);
@@ -700,13 +792,23 @@ static uint64_t H5XParseAddr(NSString *s) {
 - (void)restoreAddress:(uint64_t)a {
     NSDictionary *found=nil; for(NSDictionary *p in self.patches)if(H5XParseAddr(p[@"address"])==a){found=p;break;}
     if(!found)return; uint32_t old=[found[@"original"] unsignedIntValue];
-    [self writeWord:a word:old];[self.patches removeObject:found];[self saveState];[self renderPatches];
+    if(![self writeWord:a word:old]){
+        [self alert:[NSString stringWithFormat:@"復元に失敗しました\n\n%@",self.lastWriteStatus?:@"不明なエラー"]];
+        return;
+    }
+    [self.patches removeObject:found];[self saveState];[self renderPatches];
+    self.armStatus.text=[NSString stringWithFormat:@"RESTORE OK  %@",[self moduleOffset:a]];
     if(self.armStart)[self readARM64];
 }
 - (void)restoreAllPatches {
     NSArray *copy=[self.patches copy];
-    for(NSDictionary *p in copy)[self writeWord:H5XParseAddr(p[@"address"]) word:[p[@"original"] unsignedIntValue]];
-    [self.patches removeAllObjects];[self saveState];[self renderPatches];if(self.armStart)[self readARM64];
+    NSMutableArray *failed=[NSMutableArray array];
+    for(NSDictionary *p in copy){
+        if(![self writeWord:H5XParseAddr(p[@"address"]) word:[p[@"original"] unsignedIntValue]]) [failed addObject:p];
+    }
+    self.patches=failed;[self saveState];[self renderPatches];
+    if(failed.count)[self alert:[NSString stringWithFormat:@"%lu件の復元に失敗しました\n%@",(unsigned long)failed.count,self.lastWriteStatus?:@""]];
+    if(self.armStart)[self readARM64];
 }
 - (void)renderPatches {
     if(!self.patchStack)return;[self clearStack:self.patchStack];
@@ -738,8 +840,9 @@ static uint64_t H5XParseAddr(NSString *s) {
 }
 
 - (void)showDiag {
-    NSString *s=[NSString stringWithFormat:@"Native UI: OK\nEngine: %@\nResults: %ld\nModules: %lu\nPatches: %lu\nWindow: %.0fx%.0f",
-                 h5gg?@"OK":@"NG",[h5gg getResultsCount],(unsigned long)self.modules.count,(unsigned long)self.patches.count,
+    NSString *s=[NSString stringWithFormat:@"Native UI: OK\nEngine: %@\nPID: %d / Target: %d\nPatchMode: Local Mach VM\nResults: %ld\nModules: %lu\nPatches: %lu\nLastPatch: %@\nWindow: %.0fx%.0f",
+                 h5gg?@"OK":@"NG",getpid(),h5gg.targetpid,[h5gg getResultsCount],(unsigned long)self.modules.count,(unsigned long)self.patches.count,
+                 self.lastWriteStatus.length?self.lastWriteStatus:@"未実行",
                  H5XWindow.bounds.size.width,H5XWindow.bounds.size.height];
     [self alert:s];
 }
