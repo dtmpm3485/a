@@ -1,73 +1,76 @@
 <!doctype html>
 <html lang="ja">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
 <title>H5GGX</title>
-<link rel="stylesheet" href="src/style.css" />
+<link rel="stylesheet" href="src/style.css">
 </head>
 <body>
 <header class="topbar">
-  <div><strong>H5GGX</strong><span id="mode" class="badge">checking</span></div>
-  <button id="exportBtn">Export</button>
+  <div class="brand"><strong>H5GGX</strong><span id="mode" class="badge">checking</span></div>
+  <button id="helpBtn" class="ghost">使い方</button>
 </header>
 
 <main>
-<section class="card">
-  <div class="row">
-    <input id="value" inputmode="decimal" placeholder="検索値" />
-    <select id="type">
-      <option value="I32">I32</option><option value="I64">I64</option>
-      <option value="F32">F32</option><option value="F64">F64</option>
-      <option value="I16">I16</option><option value="I8">I8</option>
-    </select>
-  </div>
-  <div class="row">
-    <input id="rangeStart" value="0x000000000" placeholder="開始アドレス" />
-    <input id="rangeEnd" value="0x200000000" placeholder="終了アドレス" />
-  </div>
-  <div class="actions">
-    <button id="searchBtn" class="primary">検索</button>
-    <button id="nearBtn">Nearby</button>
-    <button id="clearBtn">クリア</button>
-  </div>
+<section id="helpCard" class="helpCard">
+  <div class="helpTitle">最初に</div>
+  <div class="helpText">下のメニューから機能を選びます。ARM64を使う場合は「ARM64 → モジュール選択 → offset入力 → 読む」の順です。</div>
 </section>
 
-<nav class="tabs">
-  <button data-tab="results" class="active">結果</button>
-  <button data-tab="arm64">ARM64</button>
-  <button data-tab="watch">監視</button>
-  <button data-tab="bookmarks">保存</button>
-  <button data-tab="history">履歴</button>
+<nav class="tabs" aria-label="メニュー">
+  <button data-tab="results" class="active"><span>検索</span><small>値検索</small></button>
+  <button data-tab="arm64"><span>ARM64</span><small>命令編集</small></button>
+  <button data-tab="watch"><span>監視</span><small>リアルタイム</small></button>
+  <button data-tab="bookmarks"><span>保存</span><small>ブックマーク</small></button>
+  <button data-tab="history"><span>履歴</span><small>再検索</small></button>
 </nav>
 
 <section id="results" class="panel active">
-  <div class="toolbar">
-    <input id="filter" placeholder="アドレス/値で絞り込み" />
-    <select id="diffMode"><option value="all">全部</option><option value="changed">Changed</option><option value="unchanged">Unchanged</option><option value="increased">Increased</option><option value="decreased">Decreased</option></select>
-  </div>
-  <div class="actions compact">
-    <button id="snapshotBtn">Snapshot</button><button id="refreshBtn">更新</button>
-  </div>
+  <h2>値検索</h2>
+  <p class="desc">ゲーム/アプリ内の数値を検索します。例: HPが100なら「100」を入力。</p>
+  <div class="field"><label>検索値</label><input id="value" inputmode="decimal" placeholder="例: 100"></div>
+  <div class="field"><label>型</label><select id="type"><option>I32</option><option>I64</option><option>F32</option><option>F64</option><option>I16</option><option>I8</option></select></div>
+  <details>
+    <summary>検索範囲を指定</summary>
+    <div class="field"><label>開始</label><input id="rangeStart" value="0x000000000"></div>
+    <div class="field"><label>終了</label><input id="rangeEnd" value="0x200000000"></div>
+  </details>
+  <div class="actions"><button id="searchBtn" class="primary">検索</button><button id="nearBtn">Nearby</button><button id="clearBtn">クリア</button></div>
+  <div class="toolbar"><input id="filter" placeholder="結果を絞り込み"><select id="diffMode"><option value="all">全部</option><option value="changed">Changed</option><option value="unchanged">Unchanged</option><option value="increased">Increased</option><option value="decreased">Decreased</option></select></div>
+  <div class="actions compact"><button id="snapshotBtn">Snapshot</button><button id="refreshBtn">値を更新</button></div>
   <div id="resultList" class="list"></div>
-  <div class="bulkbar"><input id="bulkValue" placeholder="選択項目の新しい値"/><button id="bulkSetBtn">一括編集</button></div>
+  <div class="bulkbar"><input id="bulkValue" placeholder="選択した結果の新しい値"><button id="bulkSetBtn">一括編集</button></div>
 </section>
 
 <section id="arm64" class="panel">
-  <div class="row"><select id="moduleSelect"></select><button id="reloadModulesBtn">Modules更新</button></div>
-  <div class="row"><input id="armAddress" placeholder="0x100000000 または module+0x1234"/><input id="armCount" type="number" min="1" max="128" value="24" placeholder="命令数"/></div>
-  <div class="actions"><button id="armReadBtn" class="primary">ARM64を読む</button><button id="armUseModuleBtn">Module先頭</button></div>
+  <h2>ARM64 ランタイム編集</h2>
+  <p class="desc">実行中メモリのARM64命令を読み、ランタイム上だけ変更します。アプリ再起動で元に戻ります。</p>
+  <div class="step"><b>1</b><div><strong>モジュールを選択</strong><small>メイン実行ファイルやFrameworkを選びます。</small></div></div>
+  <div class="field"><label>モジュール</label><select id="moduleSelect"></select></div>
+  <button id="reloadModulesBtn" class="wide">モジュール一覧を更新</button>
   <div id="moduleInfo" class="moduleInfo"></div>
+
+  <div class="step"><b>2</b><div><strong>offset またはアドレスを指定</strong><small>例: 0x123456 または GameCore+0x123456</small></div></div>
+  <div class="field"><label>Offset / Address</label><input id="armAddress" placeholder="例: 0x123456"></div>
+  <div class="field"><label>表示する命令数</label><input id="armCount" type="number" min="1" max="128" value="24"></div>
+  <div class="actions"><button id="armOffsetBtn">選択モジュール + Offset</button><button id="armUseModuleBtn">Module先頭</button></div>
+
+  <div class="step"><b>3</b><div><strong>命令を読む</strong><small>各行の NOP / 編集 / 戻す でランタイム変更できます。</small></div></div>
+  <button id="armReadBtn" class="primary wide">ARM64を読む</button>
   <div id="armList" class="list armList"></div>
 </section>
 
-<section id="watch" class="panel"><div id="watchList" class="list"></div></section>
-<section id="bookmarks" class="panel"><div id="bookmarkList" class="list"></div></section>
-<section id="history" class="panel"><div id="historyList" class="list"></div></section>
-
-<input id="importFile" type="file" accept="application/json" hidden />
+<section id="watch" class="panel">
+  <h2>監視</h2><p class="desc">検索結果の「監視」を押したアドレスを1秒ごとに更新します。</p><div id="watchList" class="list"></div>
+</section>
+<section id="bookmarks" class="panel">
+  <h2>保存</h2><p class="desc">よく使うアドレスを保存します。</p><div id="bookmarkList" class="list"></div>
+</section>
+<section id="history" class="panel">
+  <h2>検索履歴</h2><p class="desc">以前の検索条件をワンタップで復元します。</p><div id="historyList" class="list"></div>
+</section>
 </main>
 <script src="src/h5ggx.js"></script>
-<script src="src/h5ggx-pro.js"></script>
 </body>
 </html>
