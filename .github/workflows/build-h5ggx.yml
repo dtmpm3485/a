@@ -1,55 +1,19 @@
-name: Build H5GGX dylib
+name: Build H5GGX Native dylib
 
 on:
   workflow_dispatch:
   push:
     branches: [ main ]
     paths:
-      - 'Index.html'
-      - 'src/**'
+      - 'native/**'
       - '.github/workflows/build-h5ggx.yml'
 
 jobs:
   build:
     runs-on: macos-14
     steps:
-      - name: Checkout H5GGX overlay
+      - name: Checkout H5GGX
         uses: actions/checkout@v4
-
-      - name: Validate JavaScript
-        run: |
-          node --check src/h5ggx.js
-          node --check src/h5ggx-pro.js
-
-      - name: Build embedded H5 UI
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          html = Path('Index.html').read_text(encoding='utf-8')
-          css = Path('src/style.css').read_text(encoding='utf-8')
-          js = Path('src/h5ggx.js').read_text(encoding='utf-8')
-
-          # Inline all UI assets. H5GG embeds Index.html into the dylib, so relative
-          # src/href files do not exist at runtime.
-          html, css_n = re.subn(
-              r'<link\b[^>]*href=["\']src/style\.css["\'][^>]*>',
-              '<style>\n' + css + '\n</style>',
-              html,
-              flags=re.IGNORECASE
-          )
-          html, js_n = re.subn(
-              r'<script\b[^>]*src=["\']src/h5ggx\.js["\'][^>]*>\s*</script>',
-              '<script>\n' + js + '\n</script>',
-              html,
-              flags=re.IGNORECASE
-          )
-          if css_n != 1 or js_n != 1:
-              raise SystemExit(f'asset inline failed: css={css_n}, js={js_n}')
-          if 'src/style.css' in html or 'src/h5ggx.js' in html:
-              raise SystemExit('external H5GGX asset reference remains')
-          Path('H5GGX-Embedded.html').write_text(html, encoding='utf-8')
-          PY
 
       - name: Checkout upstream H5GG
         run: git clone --recursive --depth 1 https://github.com/H5GG/H5GG.git upstream
@@ -60,42 +24,74 @@ jobs:
           git clone --recursive --depth 1 https://github.com/theos/theos.git "$HOME/theos"
           echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
 
-      - name: Integrate H5GGX into H5GG core
+      - name: Integrate native H5GGX
         run: |
-          cp H5GGX-Embedded.html upstream/Index.html
-          cp H5GGX-Embedded.html upstream/Index-en.html
+          cp native/H5GGXNative.mm upstream/H5GGXNative.mm
           python3 - <<'PY'
           from pathlib import Path
 
-          # Preload system headers outside upstream's extern-C block so Xcode modules
-          # do not get imported from inside C linkage, while preserving C symbols.
+          tweak = Path('upstream/Tweak.mm')
+          t = tweak.read_text(encoding='utf-8')
+
+          anchor = 'h5ggEngine* h5gg = NULL;\n'
+          inject = anchor + '#include "H5GGXNative.mm"\n'
+          if '#include "H5GGXNative.mm"' not in t:
+              if anchor not in t:
+                  raise SystemExit('H5GG engine anchor not found')
+              t = t.replace(anchor, inject, 1)
+
+          init_anchor = 'void initload()\n{\n'
+          native_init = 'void initload()\n{\n    H5GGXNativeInit();\n    return;\n'
+          if native_init not in t:
+              if init_anchor not in t:
+                  raise SystemExit('initload anchor not found')
+              t = t.replace(init_anchor, native_init, 1)
+
+          tweak.write_text(t, encoding='utf-8')
+
+          # Current SDK compatibility for upstream cross-process headers.
           cp = Path('upstream/crossproc.h')
-          c = cp.read_text()
-          preload = '''#include <sys/cdefs.h>\n#include <sys/_types.h>\n#include <sys/param.h>\n#include <sys/types.h>\n#include <sys/mount.h>\n#include <sys/socket.h>\n#include <sys/un.h>\n#include <net/if.h>\n#include <netinet/in.h>\n'''
-          anchor = '#import <mach-o/dyld_images.h>\n'
-          if preload not in c:
-              c = c.replace(anchor, anchor + preload)
-          cp.write_text(c)
+          c = cp.read_text(encoding='utf-8')
+          preload = '''#include <sys/cdefs.h>
+          #include <sys/_types.h>
+          #include <sys/param.h>
+          #include <sys/types.h>
+          #include <sys/mount.h>
+          #include <sys/socket.h>
+          #include <sys/un.h>
+          #include <net/if.h>
+          #include <netinet/in.h>
+          '''
+          anchor2 = '#import <mach-o/dyld_images.h>\n'
+          if preload not in c and anchor2 in c:
+              c = c.replace(anchor2, anchor2 + preload, 1)
+          cp.write_text(c, encoding='utf-8')
 
           lp = Path('upstream/ldid-master/ldid.cpp')
-          l = lp.read_text()
+          l = lp.read_text(encoding='utf-8')
           guard = '#pragma clang diagnostic ignored "-Wmacro-redefined"\n#pragma clang diagnostic ignored "-Wunused-but-set-variable"\n'
           if guard not in l:
               l = guard + l
-          lp.write_text(l)
+          lp.write_text(l, encoding='utf-8')
 
-          p=Path('upstream/Makefile')
-          s=p.read_text()
-          s=s.replace('TARGET = iphone:13.7:11.4','TARGET = iphone:clang:latest:11.0')
-          s += '\nH5GG_CFLAGS += -Wno-error -Wno-module-import-in-extern-c\n'
-          s += 'H5GG_CCFLAGS += -Wno-error -Wno-macro-redefined -Wno-unused-but-set-variable -Wno-module-import-in-extern-c\n'
-          marker='H5GG_LOGOS_DEFAULT_GENERATOR = internal'
-          if 'H5GG_FRAMEWORKS =' not in s:
-              s=s.replace(marker, 'H5GG_FRAMEWORKS = UIKit Foundation JavaScriptCore SystemConfiguration CoreGraphics\n'+marker)
-          p.write_text(s)
+          mk = Path('upstream/Makefile')
+          m = mk.read_text(encoding='utf-8')
+          m = m.replace('TARGET = iphone:13.7:11.4', 'TARGET = iphone:clang:latest:11.0')
+          m += '\nH5GG_CFLAGS += -Wno-error -Wno-module-import-in-extern-c -Wno-deprecated-declarations\n'
+          m += 'H5GG_CCFLAGS += -Wno-error -Wno-macro-redefined -Wno-unused-but-set-variable -Wno-module-import-in-extern-c -Wno-deprecated-declarations\n'
+          marker = 'H5GG_LOGOS_DEFAULT_GENERATOR = internal'
+          if 'H5GG_FRAMEWORKS =' not in m:
+              m = m.replace(marker, 'H5GG_FRAMEWORKS = UIKit Foundation JavaScriptCore SystemConfiguration CoreGraphics QuartzCore\n' + marker)
+          mk.write_text(m, encoding='utf-8')
           PY
 
-      - name: Build ARM64 H5GGX
+      - name: Verify native integration
+        run: |
+          grep -q '#include "H5GGXNative.mm"' upstream/Tweak.mm
+          grep -q 'H5GGXNativeInit();' upstream/Tweak.mm
+          ! grep -q 'src/h5ggx.js' upstream/H5GGXNative.mm
+
+      - name: Build ARM64 H5GGX Native
         working-directory: upstream
         run: |
           export THEOS="$HOME/theos"
@@ -107,13 +103,13 @@ jobs:
           mkdir -p output
           DYLIB=$(find upstream/.theos -type f -name 'H5GG.dylib' | head -n 1)
           test -n "$DYLIB"
-          cp "$DYLIB" output/H5GGX.dylib
-          file output/H5GGX.dylib
-          ls -lh output/H5GGX.dylib
+          cp "$DYLIB" output/H5GGX-Native.dylib
+          file output/H5GGX-Native.dylib
+          ls -lh output/H5GGX-Native.dylib
 
-      - name: Upload H5GGX dylib
+      - name: Upload H5GGX Native dylib
         uses: actions/upload-artifact@v4
         with:
-          name: H5GGX-arm64
-          path: output/H5GGX.dylib
+          name: H5GGX-Native-arm64
+          path: output/H5GGX-Native.dylib
           if-no-files-found: error
