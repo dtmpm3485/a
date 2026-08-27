@@ -25,13 +25,29 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
           html = Path('Index.html').read_text(encoding='utf-8')
           css = Path('src/style.css').read_text(encoding='utf-8')
           js = Path('src/h5ggx.js').read_text(encoding='utf-8')
-          pro = Path('src/h5ggx-pro.js').read_text(encoding='utf-8')
-          html = html.replace('<link rel="stylesheet" href="src/style.css" />', '<style>\n'+css+'\n</style>')
-          html = html.replace('<script src="src/h5ggx.js"></script>', '<script>\n'+js+'\n</script>')
-          html = html.replace('<script src="src/h5ggx-pro.js"></script>', '<script>\n'+pro+'\n</script>')
+
+          # Inline all UI assets. H5GG embeds Index.html into the dylib, so relative
+          # src/href files do not exist at runtime.
+          html, css_n = re.subn(
+              r'<link\b[^>]*href=["\']src/style\.css["\'][^>]*>',
+              '<style>\n' + css + '\n</style>',
+              html,
+              flags=re.IGNORECASE
+          )
+          html, js_n = re.subn(
+              r'<script\b[^>]*src=["\']src/h5ggx\.js["\'][^>]*>\s*</script>',
+              '<script>\n' + js + '\n</script>',
+              html,
+              flags=re.IGNORECASE
+          )
+          if css_n != 1 or js_n != 1:
+              raise SystemExit(f'asset inline failed: css={css_n}, js={js_n}')
+          if 'src/style.css' in html or 'src/h5ggx.js' in html:
+              raise SystemExit('external H5GGX asset reference remains')
           Path('H5GGX-Embedded.html').write_text(html, encoding='utf-8')
           PY
 
