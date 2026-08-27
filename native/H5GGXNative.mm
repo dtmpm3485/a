@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <mach-o/dyld.h>
+#import <CoreFoundation/CoreFoundation.h>
 #import <mach/mach.h>
 #import <mach/vm_region.h>
 #import <mach/mach_error.h>
@@ -56,6 +57,7 @@ static uint64_t H5XParseAddr(NSString *s) {
 @property(nonatomic,strong) UIButton *moduleButton;
 @property(nonatomic,strong) UILabel *moduleInfo;
 @property(nonatomic,strong) UITextField *offsetField;
+@property(nonatomic,strong) UISegmentedControl *armAddressMode;
 @property(nonatomic,strong) UITextField *countField;
 @property(nonatomic,strong) UILabel *armStatus;
 @property(nonatomic,strong) UIStackView *armStack;
@@ -340,7 +342,13 @@ static uint64_t H5XParseAddr(NSString *s) {
     self.moduleInfo.font=H5XMono(10);
     [s addArrangedSubview:self.moduleInfo];
 
-    self.offsetField=[self field:@"Offset 例: 0x123456" value:@"0x0"];
+    self.armAddressMode=[[UISegmentedControl alloc] initWithItems:@[@"iGG VA",@"RVA"]];
+    self.armAddressMode.selectedSegmentIndex=0;
+    [self.armAddressMode.heightAnchor constraintEqualToConstant:36].active=YES;
+    [s addArrangedSubview:self.armAddressMode];
+    [s addArrangedSubview:[self label:@"iGG VA: dyld slide + 入力値 / RVA: runtime base + offset" size:10 color:H5XColor(143,166,202)]];
+
+    self.offsetField=[self field:@"iGG Offset/VA 例: 0x100123456" value:@"0x0"];
     self.countField=[self field:@"命令数" value:@"32"];
     self.countField.keyboardType=UIKeyboardTypeNumberPad;
     [s addArrangedSubview:self.offsetField];
@@ -564,11 +572,16 @@ static uint64_t H5XParseAddr(NSString *s) {
         const struct mach_header *hdr=_dyld_get_image_header(i);
         if(!name||!hdr)continue;
         uint64_t start=(uint64_t)hdr;
+        int64_t slide=(int64_t)_dyld_get_image_vmaddr_slide(i);
+        uint64_t preferred=(uint64_t)((int64_t)start-slide);
         uint64_t size=getMachoVMSize(getpid(), mach_task_self(), start);
         [self.modules addObject:@{
             @"name":[NSString stringWithUTF8String:name],
             @"start":H5XAddr(start),
-            @"end":H5XAddr(start+size)
+            @"end":H5XAddr(start+size),
+            @"slide":[NSString stringWithFormat:@"0x%llX",(uint64_t)slide],
+            @"preferred":H5XAddr(preferred),
+            @"index":@(i)
         }];
     }
     if(self.selectedModule>=self.modules.count)self.selectedModule=0;
@@ -583,7 +596,7 @@ static uint64_t H5XParseAddr(NSString *s) {
     if(!m){[self.moduleButton setTitle:@"モジュールなし" forState:UIControlStateNormal];self.moduleInfo.text=@"取得できませんでした";return;}
     NSString *name=[m[@"name"] lastPathComponent];
     [self.moduleButton setTitle:[NSString stringWithFormat:@"Module: %@",name] forState:UIControlStateNormal];
-    self.moduleInfo.text=[NSString stringWithFormat:@"%@\nBASE %@\nEND  %@",m[@"name"],m[@"start"],m[@"end"]];
+    self.moduleInfo.text=[NSString stringWithFormat:@"%@\nRUNTIME %@\nSLIDE   %@\nPREF    %@\nEND     %@",m[@"name"],m[@"start"],m[@"slide"],m[@"preferred"],m[@"end"]];
 }
 - (void)selectModule {
     if(self.modules.count==0)[self loadModules];
@@ -641,9 +654,15 @@ static uint64_t H5XParseAddr(NSString *s) {
 }
 - (void)readARM64 {
     NSDictionary *m=[self currentModule]; if(!m){[self alert:@"モジュールを選択してください"];return;}
-    uint64_t base=H5XParseAddr(m[@"start"]);
-    uint64_t off=H5XParseAddr(self.offsetField.text);
-    uint64_t start=(base+off)&~3ULL;
+    uint64_t input=H5XParseAddr(self.offsetField.text);
+    uint64_t start=0;
+    if(self.armAddressMode.selectedSegmentIndex==0){
+        uint64_t slide=H5XParseAddr(m[@"slide"]);
+        start=(slide+input)&~3ULL;
+    } else {
+        uint64_t base=H5XParseAddr(m[@"start"]);
+        start=(base+input)&~3ULL;
+    }
     NSInteger count=MAX(1,MIN(128,self.countField.text.integerValue?:32));
     self.armStart=start;
     self.armStatus.text=[NSString stringWithFormat:@"開始 %@ / %@",[self moduleOffset:start],H5XAddr(start)];
@@ -678,87 +697,59 @@ static uint64_t H5XParseAddr(NSString *s) {
         return NO;
     }
     if(h5gg.targetpid!=0 && h5gg.targetpid!=getpid()){
-        self.lastWriteStatus=@"非脱獄Mach VMパッチは同一プロセス専用です";
+        self.lastWriteStatus=@"iGG互換パッチは同一プロセス専用です";
         return NO;
     }
 
-    task_t task=mach_task_self();
-    vm_address_t query=(vm_address_t)a;
-    vm_size_t regionSize=0;
-    vm_region_basic_info_data_64_t info={0};
-    mach_msg_type_number_t infoCount=VM_REGION_BASIC_INFO_COUNT_64;
-    mach_port_t objectName=MACH_PORT_NULL;
+    mach_port_t port=mach_task_self();
 
-    kern_return_t kr=vm_region_64(task,
-                                 &query,
-                                 &regionSize,
-                                 VM_REGION_BASIC_INFO_64,
-                                 (vm_region_info_t)&info,
-                                 &infoCount,
-                                 &objectName);
-    if(objectName!=MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), objectName);
-    if(kr!=KERN_SUCCESS || (vm_address_t)a<query || (vm_address_t)a>=query+regionSize){
-        self.lastWriteStatus=[NSString stringWithFormat:@"vm_region_64失敗: %d (%s)",kr,mach_error_string(kr)];
+    // iGameGod public template compatibility:
+    // vm_protect(address, sizeof(data), R|W|COPY) -> vm_write -> R|X
+    kern_return_t err=vm_protect(port,
+                                 (vm_address_t)a,
+                                 sizeof(uint32_t),
+                                 false,
+                                 VM_PROT_READ|VM_PROT_WRITE|VM_PROT_COPY);
+    if(err!=KERN_SUCCESS){
+        self.lastWriteStatus=[NSString stringWithFormat:@"iGG vm_protect RW|COPY 失敗: %d (%s)",err,mach_error_string(err)];
         return NO;
     }
 
-    vm_prot_t original=info.protection;
-    vm_size_t pageSize=(vm_size_t)vm_page_size;
-    vm_address_t pageStart=((vm_address_t)a)&~((vm_address_t)pageSize-1);
-    vm_size_t protectSize=pageSize;
-    BOOL changedProtection=NO;
+    // iGG's public patch routine receives memory-byte-order hex and swaps it.
+    // H5GGX UI displays the normal ARM64 encoding, so convert to iGG input form
+    // and perform the same CFSwapInt32 step before vm_write.
+    uint32_t iggInput=CFSwapInt32(w);
+    uint32_t data=CFSwapInt32(iggInput);
 
-    if((original&VM_PROT_WRITE)==0){
-        vm_prot_t desired=original|VM_PROT_WRITE|VM_PROT_COPY;
-        kr=vm_protect(task,pageStart,protectSize,FALSE,desired);
-        if(kr!=KERN_SUCCESS){
-            // Some non-jailbroken builds reject W+X. Temporarily drop EXECUTE,
-            // write the COW page, then restore the exact original protection.
-            desired=VM_PROT_READ|VM_PROT_WRITE|VM_PROT_COPY;
-            kr=vm_protect(task,pageStart,protectSize,FALSE,desired);
-        }
-        if(kr!=KERN_SUCCESS){
-            self.lastWriteStatus=[NSString stringWithFormat:@"ページを書込可能にできません: %d (%s)\n元Protection=0x%x",kr,mach_error_string(kr),original];
-            return NO;
-        }
-        changedProtection=YES;
-    }
-
-    kr=vm_write(task,
-                (vm_address_t)a,
-                (vm_offset_t)&w,
-                (mach_msg_type_number_t)sizeof(w));
-    if(kr!=KERN_SUCCESS){
-        if(changedProtection) vm_protect(task,pageStart,protectSize,FALSE,original);
-        self.lastWriteStatus=[NSString stringWithFormat:@"vm_write失敗: %d (%s)",kr,mach_error_string(kr)];
+    err=vm_write(port,
+                 (vm_address_t)a,
+                 (vm_offset_t)&data,
+                 sizeof(data));
+    if(err!=KERN_SUCCESS){
+        vm_protect(port,(vm_address_t)a,sizeof(data),false,VM_PROT_READ|VM_PROT_EXECUTE);
+        self.lastWriteStatus=[NSString stringWithFormat:@"iGG vm_write失敗: %d (%s)",err,mach_error_string(err)];
         return NO;
     }
 
-    uint32_t verify=0;
-    vm_size_t outSize=0;
-    kern_return_t readKr=vm_read_overwrite(task,
-                                           (vm_address_t)a,
-                                           sizeof(verify),
-                                           (vm_address_t)&verify,
-                                           &outSize);
+    sys_icache_invalidate((void*)a,sizeof(data));
 
-    sys_icache_invalidate((void*)a,sizeof(w));
+    kern_return_t restoreErr=vm_protect(port,
+                                        (vm_address_t)a,
+                                        sizeof(data),
+                                        false,
+                                        VM_PROT_READ|VM_PROT_EXECUTE);
 
-    kern_return_t restoreKr=KERN_SUCCESS;
-    if(changedProtection){
-        restoreKr=vm_protect(task,pageStart,protectSize,FALSE,original);
-    }
-
-    if(readKr!=KERN_SUCCESS || outSize!=sizeof(verify) || verify!=w){
-        self.lastWriteStatus=[NSString stringWithFormat:@"書込検証失敗: read=%d size=%llu got=%@",readKr,outSize,H5XHex32(verify)];
+    uint32_t verify=[self readU32:a];
+    if(verify!=w){
+        self.lastWriteStatus=[NSString stringWithFormat:@"iGG書込検証失敗: expected=%@ got=%@",H5XHex32(w),H5XHex32(verify)];
         return NO;
     }
-    if(restoreKr!=KERN_SUCCESS){
-        self.lastWriteStatus=[NSString stringWithFormat:@"書込成功。ただしProtection復元失敗: %d (%s)",restoreKr,mach_error_string(restoreKr)];
+    if(restoreErr!=KERN_SUCCESS){
+        self.lastWriteStatus=[NSString stringWithFormat:@"iGG書込成功 / RX復元失敗: %d (%s)",restoreErr,mach_error_string(restoreErr)];
         return YES;
     }
 
-    self.lastWriteStatus=[NSString stringWithFormat:@"Mach VM PATCH OK  %@  Protection 0x%x",H5XHex32(w),original];
+    self.lastWriteStatus=[NSString stringWithFormat:@"iGG PATCH OK  %@",H5XHex32(w)];
     return YES;
 }
 - (void)applyPatch:(uint64_t)a newWord:(uint32_t)nw {
@@ -838,7 +829,7 @@ static uint64_t H5XParseAddr(NSString *s) {
 }
 
 - (void)showDiag {
-    NSString *s=[NSString stringWithFormat:@"Native UI: OK\nEngine: %@\nPID: %d / Target: %d\nPatchMode: Local Mach VM\nResults: %ld\nModules: %lu\nPatches: %lu\nLastPatch: %@\nWindow: %.0fx%.0f",
+    NSString *s=[NSString stringWithFormat:@"Native UI: OK\nEngine: %@\nPID: %d / Target: %d\nPatchMode: iGG vm_protect(RW|COPY) -> vm_write -> RX\nResults: %ld\nModules: %lu\nPatches: %lu\nLastPatch: %@\nWindow: %.0fx%.0f",
                  h5gg?@"OK":@"NG",getpid(),h5gg.targetpid,[h5gg getResultsCount],(unsigned long)self.modules.count,(unsigned long)self.patches.count,
                  self.lastWriteStatus.length?self.lastWriteStatus:@"未実行",
                  H5XWindow.bounds.size.width,H5XWindow.bounds.size.height];
