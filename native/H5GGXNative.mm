@@ -2,7 +2,6 @@
 #import <Foundation/Foundation.h>
 #import <mach-o/dyld.h>
 #import <mach/mach.h>
-#import <mach/mach_vm.h>
 #import <mach/vm_region.h>
 #import <mach/mach_error.h>
 #import <libkern/OSCacheControl.h>
@@ -684,39 +683,39 @@ static uint64_t H5XParseAddr(NSString *s) {
     }
 
     task_t task=mach_task_self();
-    mach_vm_address_t query=(mach_vm_address_t)a;
-    mach_vm_size_t regionSize=0;
+    vm_address_t query=(vm_address_t)a;
+    vm_size_t regionSize=0;
     vm_region_basic_info_data_64_t info={0};
     mach_msg_type_number_t infoCount=VM_REGION_BASIC_INFO_COUNT_64;
     mach_port_t objectName=MACH_PORT_NULL;
 
-    kern_return_t kr=mach_vm_region(task,
-                                    &query,
-                                    &regionSize,
-                                    VM_REGION_BASIC_INFO_64,
-                                    (vm_region_info_t)&info,
-                                    &infoCount,
-                                    &objectName);
+    kern_return_t kr=vm_region_64(task,
+                                 &query,
+                                 &regionSize,
+                                 VM_REGION_BASIC_INFO_64,
+                                 (vm_region_info_t)&info,
+                                 &infoCount,
+                                 &objectName);
     if(objectName!=MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), objectName);
-    if(kr!=KERN_SUCCESS || (mach_vm_address_t)a<query || (mach_vm_address_t)a>=query+regionSize){
-        self.lastWriteStatus=[NSString stringWithFormat:@"mach_vm_region失敗: %d (%s)",kr,mach_error_string(kr)];
+    if(kr!=KERN_SUCCESS || (vm_address_t)a<query || (vm_address_t)a>=query+regionSize){
+        self.lastWriteStatus=[NSString stringWithFormat:@"vm_region_64失敗: %d (%s)",kr,mach_error_string(kr)];
         return NO;
     }
 
     vm_prot_t original=info.protection;
     vm_size_t pageSize=(vm_size_t)vm_page_size;
-    mach_vm_address_t pageStart=((mach_vm_address_t)a)&~((mach_vm_address_t)pageSize-1);
-    mach_vm_size_t protectSize=pageSize;
+    vm_address_t pageStart=((vm_address_t)a)&~((vm_address_t)pageSize-1);
+    vm_size_t protectSize=pageSize;
     BOOL changedProtection=NO;
 
     if((original&VM_PROT_WRITE)==0){
         vm_prot_t desired=original|VM_PROT_WRITE|VM_PROT_COPY;
-        kr=mach_vm_protect(task,pageStart,protectSize,FALSE,desired);
+        kr=vm_protect(task,pageStart,protectSize,FALSE,desired);
         if(kr!=KERN_SUCCESS){
             // Some non-jailbroken builds reject W+X. Temporarily drop EXECUTE,
-            // write to the COW page, then restore the exact original protection.
+            // write the COW page, then restore the exact original protection.
             desired=VM_PROT_READ|VM_PROT_WRITE|VM_PROT_COPY;
-            kr=mach_vm_protect(task,pageStart,protectSize,FALSE,desired);
+            kr=vm_protect(task,pageStart,protectSize,FALSE,desired);
         }
         if(kr!=KERN_SUCCESS){
             self.lastWriteStatus=[NSString stringWithFormat:@"ページを書込可能にできません: %d (%s)\n元Protection=0x%x",kr,mach_error_string(kr),original];
@@ -725,30 +724,30 @@ static uint64_t H5XParseAddr(NSString *s) {
         changedProtection=YES;
     }
 
-    kr=mach_vm_write(task,
-                     (mach_vm_address_t)a,
-                     (vm_offset_t)&w,
-                     (mach_msg_type_number_t)sizeof(w));
+    kr=vm_write(task,
+                (vm_address_t)a,
+                (vm_offset_t)&w,
+                (mach_msg_type_number_t)sizeof(w));
     if(kr!=KERN_SUCCESS){
-        if(changedProtection) mach_vm_protect(task,pageStart,protectSize,FALSE,original);
-        self.lastWriteStatus=[NSString stringWithFormat:@"mach_vm_write失敗: %d (%s)",kr,mach_error_string(kr)];
+        if(changedProtection) vm_protect(task,pageStart,protectSize,FALSE,original);
+        self.lastWriteStatus=[NSString stringWithFormat:@"vm_write失敗: %d (%s)",kr,mach_error_string(kr)];
         return NO;
     }
 
     uint32_t verify=0;
-    mach_vm_size_t outSize=0;
-    kern_return_t readKr=mach_vm_read_overwrite(task,
-                                                (mach_vm_address_t)a,
-                                                sizeof(verify),
-                                                (mach_vm_address_t)&verify,
-                                                &outSize);
+    vm_size_t outSize=0;
+    kern_return_t readKr=vm_read_overwrite(task,
+                                           (vm_address_t)a,
+                                           sizeof(verify),
+                                           (vm_address_t)&verify,
+                                           &outSize);
 
     sys_icache_invalidate((void*)a,sizeof(w));
     __builtin___clear_cache((char*)a,(char*)a+sizeof(w));
 
     kern_return_t restoreKr=KERN_SUCCESS;
     if(changedProtection){
-        restoreKr=mach_vm_protect(task,pageStart,protectSize,FALSE,original);
+        restoreKr=vm_protect(task,pageStart,protectSize,FALSE,original);
     }
 
     if(readKr!=KERN_SUCCESS || outSize!=sizeof(verify) || verify!=w){
