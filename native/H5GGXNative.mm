@@ -125,7 +125,7 @@ static uint64_t H5XParseAddr(NSString *s) {
     f.leftViewMode=UITextFieldViewModeAlways;
     f.rightView=[[UIView alloc] initWithFrame:CGRectMake(0,0,9,1)];
     f.rightViewMode=UITextFieldViewModeAlways;
-    f.heightAnchor.constraintEqualToConstant(42).active=YES;
+    [f.heightAnchor constraintEqualToConstant:42].active=YES;
     return f;
 }
 - (UIButton*)button:(NSString*)title action:(SEL)sel {
@@ -138,7 +138,7 @@ static uint64_t H5XParseAddr(NSString *s) {
     b.layer.borderWidth=1;
     b.layer.borderColor=H5XColor(52,72,102).CGColor;
     [b addTarget:self action:sel forControlEvents:UIControlEventTouchUpInside];
-    b.heightAnchor.constraintEqualToConstant(40).active=YES;
+    [b.heightAnchor constraintEqualToConstant:40].active=YES;
     return b;
 }
 - (UIButton*)primaryButton:(NSString*)title action:(SEL)sel {
@@ -296,7 +296,7 @@ static uint64_t H5XParseAddr(NSString *s) {
 
     self.searchType=[[UISegmentedControl alloc] initWithItems:@[@"I32",@"I64",@"F32",@"F64"]];
     self.searchType.selectedSegmentIndex=0;
-    self.searchType.heightAnchor.constraintEqualToConstant(36).active=YES;
+    [self.searchType.heightAnchor constraintEqualToConstant:36].active=YES;
     [s addArrangedSubview:self.searchType];
 
     self.rangeStart=[self field:@"開始" value:@"0x000000000"];
@@ -362,7 +362,7 @@ static uint64_t H5XParseAddr(NSString *s) {
     self.hexView.textColor=H5XColor(198,211,232);
     self.hexView.font=H5XMono(9);
     self.hexView.layer.cornerRadius=9;
-    self.hexView.heightAnchor.constraintEqualToConstant(190).active=YES;
+    [self.hexView.heightAnchor constraintEqualToConstant:190].active=YES;
     [s addArrangedSubview:self.hexView];
 
     [self installPage:@"arm64" scroll:scroll];
