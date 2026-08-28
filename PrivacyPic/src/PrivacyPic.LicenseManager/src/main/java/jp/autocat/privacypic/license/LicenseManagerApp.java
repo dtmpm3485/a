@@ -16,13 +16,12 @@ import java.security.PrivateKey;
 import java.security.Signature;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.time.*;
-import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.Locale;
 import java.util.UUID;
 
 public final class LicenseManagerApp extends Application {
-    // Replaced only inside the private build job. Never committed with a real private key.
+    // Build job replaces this placeholder. A real key is never committed.
     private static final String PRIVATE_KEY_B64 = "__PRIVATE_KEY_DER_B64__";
 
     private final TextField orderId = new TextField();
@@ -73,17 +72,22 @@ public final class LicenseManagerApp extends Application {
         form.addRow(1, new Label("端末コード"), deviceCode);
         form.addRow(2, new Label("ライセンス"), new HBox(14, permanent, expiring));
         form.addRow(3, new Label("有効期限"), expiryRow);
+
         ColumnConstraints left = new ColumnConstraints();
         left.setMinWidth(150);
         ColumnConstraints right = new ColumnConstraints();
         right.setHgrow(Priority.ALWAYS);
         form.getColumnConstraints().addAll(left, right);
 
+        var checks = new Label(
+                "発行形式: PP2 / RSA-3072 SHA-256 / 端末固定 / BATCH,FOLDER権限");
+        checks.setStyle("-fx-text-fill: #555555;");
+
         status.setWrapText(true);
 
-        var root = new VBox(15, title, warning, new Separator(), form, copyHelp, issue, status);
+        var root = new VBox(15, title, warning, new Separator(), form, copyHelp, checks, issue, status);
         root.setPadding(new Insets(22));
-        root.setPrefWidth(680);
+        root.setPrefWidth(700);
 
         stage.setScene(new Scene(root));
         stage.setResizable(false);
@@ -106,36 +110,49 @@ public final class LicenseManagerApp extends Application {
 
             Instant issued = Instant.now();
             long expires = 0L;
+
             if (expiring.isSelected()) {
                 LocalDate date = expiryDate.getValue();
-                if (date == null) throw new IllegalArgumentException("有効期限の日付を選択してください。");
+                if (date == null) {
+                    throw new IllegalArgumentException("有効期限の日付を選択してください。");
+                }
+
                 LocalDateTime local = date.atTime(expiryHour.getValue(), expiryMinute.getValue(), 59);
                 Instant exp = local.atZone(ZoneId.systemDefault()).toInstant();
-                if (!exp.isAfter(issued)) throw new IllegalArgumentException("有効期限は現在より後にしてください。");
+                if (!exp.isAfter(issued)) {
+                    throw new IllegalArgumentException("有効期限は現在より後にしてください。");
+                }
                 expires = exp.getEpochSecond();
             }
 
-            String licenseId = UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
+            String licenseId = UUID.randomUUID()
+                    .toString()
+                    .replace("-", "")
+                    .toUpperCase(Locale.ROOT);
+
             String payloadText = String.join("|",
                     "PP2",
                     licenseId,
                     order,
                     "PRO",
-                    DateTimeFormatter.ISO_INSTANT.format(issued),
-                    expires,
-                    device);
+                    Long.toString(issued.getEpochSecond()),
+                    Long.toString(expires),
+                    device,
+                    "BATCH,FOLDER,REVERIFY");
 
             byte[] payload = payloadText.getBytes(StandardCharsets.UTF_8);
             byte[] signature = sign(payload);
 
             String json = "{\n" +
+                    "  \"version\": 2,\n" +
                     "  \"payload\": \"" + Base64.getEncoder().encodeToString(payload) + "\",\n" +
                     "  \"signature\": \"" + Base64.getEncoder().encodeToString(signature) + "\"\n" +
                     "}\n";
 
             FileChooser chooser = new FileChooser();
             chooser.setTitle("PrivacyPic Pro ライセンスを保存");
-            chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("PrivacyPic License", "*.lic"));
+            chooser.getExtensionFilters().add(
+                    new FileChooser.ExtensionFilter("PrivacyPic License", "*.lic"));
             chooser.setInitialFileName("PrivacyPic_" + safeFilePart(order) + ".lic");
 
             File target = chooser.showSaveDialog(stage);
@@ -143,7 +160,10 @@ public final class LicenseManagerApp extends Application {
 
             Files.writeString(target.toPath(), json, StandardCharsets.UTF_8);
             status.setStyle("-fx-text-fill: #087830; -fx-font-weight: 600;");
-            status.setText("発行しました: " + target.getAbsolutePath() + "\n端末: " + device);
+            status.setText(
+                    "発行しました: " + target.getAbsolutePath() +
+                    "\n端末: " + device +
+                    (expires == 0L ? "\n期限: 永久" : "\n期限: " + Instant.ofEpochSecond(expires)));
         } catch (Exception ex) {
             status.setStyle("-fx-text-fill: #b00020; -fx-font-weight: 600;");
             status.setText("発行エラー: " + ex.getMessage());
@@ -154,6 +174,7 @@ public final class LicenseManagerApp extends Application {
         byte[] privateDer = Base64.getDecoder().decode(PRIVATE_KEY_B64);
         PrivateKey privateKey = KeyFactory.getInstance("RSA")
                 .generatePrivate(new PKCS8EncodedKeySpec(privateDer));
+
         Signature signer = Signature.getInstance("SHA256withRSA");
         signer.initSign(privateKey);
         signer.update(payload);
@@ -162,8 +183,14 @@ public final class LicenseManagerApp extends Application {
 
     private static String sanitizeOrder(String value) {
         if (value == null) return "";
-        String out = value.replace('|', '-').replace('\r', ' ').replace('\n', ' ').trim();
-        if (out.length() > 128) throw new IllegalArgumentException("注文IDは128文字以内にしてください。");
+        String out = value
+                .replace('|', '-')
+                .replace('\r', ' ')
+                .replace('\n', ' ')
+                .trim();
+        if (out.length() > 128) {
+            throw new IllegalArgumentException("注文IDは128文字以内にしてください。");
+        }
         return out;
     }
 
