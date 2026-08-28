@@ -1,4 +1,4 @@
-name: Build MC ESP A4
+name: Build MC ESP A5
 
 on:
   push:
@@ -52,11 +52,11 @@ jobs:
         run: |
           mkdir -p out
           APK=$(find launcher/app/build/outputs/apk/debug -name '*.apk' | head -n1)
-          cp "$APK" out/MCESP-26.44.3-A4.apk
-          sha256sum out/MCESP-26.44.3-A4.apk > out/SHA256.txt
+          cp "$APK" out/MCESP-26.44.3-A5.apk
+          sha256sum out/MCESP-26.44.3-A5.apk > out/SHA256.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: MCESP-26.44.3-A4
+          name: MCESP-26.44.3-A5
           path: out/
           if-no-files-found: error
