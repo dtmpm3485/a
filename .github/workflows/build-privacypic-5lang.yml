@@ -118,7 +118,11 @@ jobs:
       - name: Build Zig launcher
         run: |
           New-Item -ItemType Directory -Force PrivacyPic/out/Launcher | Out-Null
-          zig build-exe PrivacyPic/src/PrivacyPic.Launcher/main.zig -O ReleaseSmall -target x86_64-windows -fstrip --subsystem windows -femit-bin=PrivacyPic/out/Launcher/PrivacyPic.exe
+          Push-Location PrivacyPic/out/Launcher
+          zig build-exe ../../src/PrivacyPic.Launcher/main.zig -O ReleaseSmall -target x86_64-windows -fstrip --subsystem windows
+          if (-not (Test-Path "main.exe")) { throw "Zig launcher output missing" }
+          Move-Item -Force main.exe PrivacyPic.exe
+          Pop-Location
 
       - name: Stage user runtime
         run: |
