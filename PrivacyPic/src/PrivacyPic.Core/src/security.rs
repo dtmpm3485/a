@@ -23,7 +23,17 @@ use std::{
 pub const ALL_SECURITY_BITS: u32 = 0x03FF;
 static INTEGRITY_OK: AtomicBool = AtomicBool::new(false);
 
-const PUBLIC_KEY_PEM: &str = r#"__PUBLIC_KEY_PEM__"#;
+const PUBLIC_KEY_PEM: &str = r#"-----BEGIN PUBLIC KEY-----
+MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAnTAU5bssOuvV2WrrIiAa
+AeP7AlEZ+h7MTG6V7uG15nEYYsJ7iM0LTskVp7g3hzhwC1TZg+pWELqRpxs1wkCm
+Qz7uwZBpSkUI8kLcUR36VtDo0FZasYdFGys82kXGaZpfES9YAycsmCJZYP7wAG5y
+T39qfWLv628Ftzif5rdTMZ8ilGyWKsmtDYop7VFY/jXtMCnqRihjzIq9gCZ7WZMr
+TrjKRukGphb8FG6Ova6704w5y/0zhpnnKaQyA3eMjOuoa5Z32XdJGQ/xBMtltdFm
+1KiNOjZW7Ir7U89IeDmkB6s4AvFaIeRyEoxulTCNnvY5C4kO0sSWk2Kt5EF+nha1
+S5DW1QfVbs75gtjrN3u29rjMmp6m7iyl4Ub5EgKCk0GIEHAuLR1mtaFj6jCKC8aA
+URsx4Eb71He8ueSc7WvIW+Av2DqGAfmU8IE9cVfeIG0nx9k1kWTvW29xjmtDU1BM
+8CzGJouJNgYqbj7QkniZ63AhxDjN9HkdBUaMPt545da3AgMBAAE=
+-----END PUBLIC KEY-----"#;
 
 #[derive(Deserialize)]
 struct LicenseEnvelope {
