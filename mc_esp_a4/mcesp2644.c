@@ -113,7 +113,6 @@ static uintptr_t find_minecraft_bias(void) {
         char* mapped = line + n;
         mapped[strcspn(mapped, "\r\n")] = 0;
         if (!strstr(mapped, "libminecraftpe.so")) continue;
-        if (strstr(mapped, "org.levimc.launcher")) continue;
 
         uintptr_t bias = (uintptr_t)start - (uintptr_t)off;
         if (bias < best) best = bias;
