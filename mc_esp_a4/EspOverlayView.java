@@ -143,7 +143,7 @@ public final class EspOverlayView extends View {
         }
         float w = getWidth(), h = getHeight();
 
-        String dbg = "A5 " + (espEnabled ? "ON" : "OFF") + " native=" + nativeLoaded + " retry=" + retryCount;
+        String dbg = "A6 " + (espEnabled ? "ON" : "OFF") + " native=" + nativeLoaded + " retry=" + retryCount;
         if (nativeLoaded) {
             try {
                 String n = nativeGetDebugStatus();
