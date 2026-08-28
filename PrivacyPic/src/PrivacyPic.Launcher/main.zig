@@ -1,44 +1,42 @@
 const std = @import("std");
 
-const APP_SHA256 = "__APP_SHA256__";
-const GUARD_SHA256 = "__GUARD_SHA256__";
-const CORE_SHA256 = "__CORE_SHA256__";
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
 
-fn hashMatches(path: []const u8, expected: []const u8) !bool {
-    var file = try std.fs.openFileAbsolute(path, .{});
-    defer file.close();
+    const exe_dir = try std.fs.selfExeDirPathAlloc(allocator);
+    defer allocator.free(exe_dir);
 
-    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-    var buf: [64 * 1024]u8 = undefined;
-    while (true) {
-        const n = try file.read(&buf);
-        if (n == 0) break;
-        hasher.update(buf[0..n]);
+    const required = [_][]const u8{
+        "PrivacyPic.exe",
+        "privacypic_core.dll",
+        "privacypic_guard.dll",
+        "integrity.json",
+        "integrity.sig",
+    };
+
+    for (required) |name| {
+        const full = try std.fs.path.join(allocator, &.{ exe_dir, name });
+        defer allocator.free(full);
+        var file = std.fs.openFileAbsolute(full, .{}) catch {
+            std.debug.print("PrivacyPic: required file missing: {s}\n", .{name});
+            return;
+        };
+        file.close();
     }
 
-    var digest: [32]u8 = undefined;
-    hasher.final(&digest);
-    const hex = std.fmt.bytesToHex(digest, .lower);
-    return std.mem.eql(u8, hex[0..], expected);
-}
+    const app_path = try std.fs.path.join(allocator, &.{ exe_dir, "PrivacyPic.exe" });
+    defer allocator.free(app_path);
 
-pub fn main() !void {
-    const allocator = std.heap.page_allocator;
-    const dir = try std.fs.selfExeDirPathAlloc(allocator);
-    defer allocator.free(dir);
+    var env_map = try std.process.getEnvMap(allocator);
+    defer env_map.deinit();
+    try env_map.put("PRIVACYPIC_LAUNCH_TOKEN", "PP2-PRIVACYPIC-LAUNCHER-V2");
 
-    const app = try std.fs.path.join(allocator, &.{ dir, "PrivacyPicApp.exe" });
-    defer allocator.free(app);
-    const guard = try std.fs.path.join(allocator, &.{ dir, "PrivacyPicGuard.dll" });
-    defer allocator.free(guard);
-    const core = try std.fs.path.join(allocator, &.{ dir, "privacypic_core.dll" });
-    defer allocator.free(core);
+    const argv = [_][]const u8{app_path};
+    var child = std.process.Child.init(&argv, allocator);
+    child.cwd = exe_dir;
+    child.env_map = &env_map;
 
-    if (!(try hashMatches(app, APP_SHA256))) return error.AppIntegrity;
-    if (!(try hashMatches(guard, GUARD_SHA256))) return error.GuardIntegrity;
-    if (!(try hashMatches(core, CORE_SHA256))) return error.CoreIntegrity;
-
-    var child = std.process.Child.init(&.{ app, "--pp-launch-v2" }, allocator);
-    try child.spawn();
-    _ = try child.wait();
+    _ = try child.spawnAndWait();
 }
