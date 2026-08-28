@@ -321,29 +321,7 @@ static void data_driven_render_hook(void* self, void* render_context, void* acto
     original_render(self, render_context, actor_render_data);
 }
 
-typedef struct {
-    const char* requested_path;
-    uintptr_t base;
-} PhdrFindCtx;
-
-static int phdr_find_real_minecraft(struct dl_phdr_info* info, size_t size, void* data) {
-    (void)size;
-    PhdrFindCtx* ctx = (PhdrFindCtx*)data;
-    const char* name = info->dlpi_name;
-    if (!name || !strstr(name, "libminecraftpe.so")) return 0;
-    if (strstr(name, "com.aruked.kafkalauncher")) return 0;
-    if (ctx->requested_path && ctx->requested_path[0] &&
-        strcmp(name, ctx->requested_path) != 0 &&
-        strstr(ctx->requested_path, "libminecraftpe.so") == NULL) return 0;
-    ctx->base = (uintptr_t)info->dlpi_addr;
-    return 1;
-}
-
 static uintptr_t find_load_bias(const char* path) {
-    PhdrFindCtx ctx = { path, 0 };
-    dl_iterate_phdr(phdr_find_real_minecraft, &ctx);
-    if (ctx.base) return ctx.base;
-
     FILE* f = fopen("/proc/self/maps", "r");
     if (!f) return 0;
     uintptr_t best = UINTPTR_MAX;
