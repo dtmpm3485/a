@@ -38,6 +38,7 @@ jobs:
           cd launcher
           git checkout 0a72ca62fdab356e04b58fea6858e5bad162027b
           cp ../mc_esp_patch/minecraft_world_hook.c app/src/main/cpp/minecraft_world_hook.c
+          cp ../mc_esp_patch/minecraftpe_forwarder.c app/src/main/cpp/minecraftpe_forwarder.c
           cp ../mc_esp_patch/EspOverlayView.java app/src/main/java/com/aruked/kafkalauncher/EspOverlayView.java
           python3 - <<'PY'
           from pathlib import Path
@@ -45,8 +46,33 @@ jobs:
           p = Path("app/src/main/java/com/aruked/kafkalauncher/KafkaApplication.java")
           s = p.read_text()
           s = s.replace(
-              "installHooks(activity);",
-              "installHooks(activity);\n                EspOverlayView.attach(activity);"
+              "private final AtomicBoolean hookInstalledReported = new AtomicBoolean();",
+              "private final AtomicBoolean hookInstalledReported = new AtomicBoolean();\n"
+              "    private final AtomicBoolean espStartupScheduled = new AtomicBoolean();"
+          )
+          # 26.44.3 is sensitive to hooks during NativeActivity bootstrap.
+          # Remove pre-create/created/started installs and install only after resume.
+          s = s.replace("                installHooks(activity);\n", "")
+          s = s.replace(
+              "@Override public void onActivityResumed(Activity activity) {}",
+              "@Override\n"
+              "            public void onActivityResumed(Activity activity) {\n"
+              "                if (!isMinecraft(activity)) {\n"
+              "                    return;\n"
+              "                }\n"
+              "                if (espStartupScheduled.compareAndSet(false, true)) {\n"
+              "                    new Handler(Looper.getMainLooper()).postDelayed(() -> {\n"
+              "                        if (!activity.isFinishing() && !activity.isDestroyed()) {\n"
+              "                            ProbeReport.append(KafkaApplication.this, \"[START] Installing delayed ESP hook\");\n"
+              "                            boolean ok = nativeInstallHooksForHostedActivity(activity);\n"
+              "                            ProbeReport.append(KafkaApplication.this, ok\n"
+              "                                    ? \"[OK] Delayed ESP hook ready\"\n"
+              "                                    : \"[WARN] ESP hook was not installed\");\n"
+              "                            EspOverlayView.attach(activity);\n"
+              "                        }\n"
+              "                    }, 1800);\n"
+              "                }\n"
+              "            }"
           )
           p.write_text(s)
 
@@ -71,7 +97,7 @@ jobs:
 
           p = Path("app/build.gradle.kts")
           s = p.read_text()
-          s = s.replace('versionName = "0.2.0"', 'versionName = "26.44.3-esp-a1"')
+          s = s.replace('versionName = "0.2.0"', 'versionName = "26.44.3-esp-a3"')
           p.write_text(s)
           PY
 
