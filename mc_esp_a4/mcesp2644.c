@@ -118,7 +118,7 @@ static int project_rel(V3 rel,V3 right,V3 up,V3 forward,float aspect,float fov,f
 static int project_actor(void* rc,void* ard,int cat,float* ox,float* ot,float* ob){
     if(!rc||!ard) return 0;
     V3 pos; memcpy(&pos,(uint8_t*)ard+0x10,sizeof(pos)); if(!sane_v3(pos)) return 0;
-    void* sc=*(void**)((uint8_t*)rc+0x20); if(!sc) return 0;
+    void* sc=*(void**)((uint8_t*)rc+0x28); if(!sc) return 0;
     void* cam=*(void**)((uint8_t*)sc+0x18); if(!cam) return 0;
 
     V3 right,up,forward,cpos; float aspect,fov;
