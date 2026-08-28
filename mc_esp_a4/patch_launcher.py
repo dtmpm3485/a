@@ -6,6 +6,7 @@ root = Path("launcher")
 p = root / "app/src/main/cpp/CMakeLists.txt"
 s = p.read_text()
 patch = """
+enable_language(C)
 find_package(shadowhook REQUIRED CONFIG)
 
 add_library(mcesp2644 SHARED mcesp2644.c)
