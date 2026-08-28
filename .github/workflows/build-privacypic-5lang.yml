@@ -33,60 +33,189 @@ jobs:
           java-version: "21"
           cache: maven
 
-      - name: Setup Zig
+      - name: Setup Zig 0.13
         uses: mlugg/setup-zig@v2
         with:
           version: "0.13.0"
 
-      - name: Setup MSVC
+      - name: Setup MSVC x64
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      - name: Build C++ guard
+      - name: Generate signing keypair and inject build-only keys
         run: |
-          New-Item -ItemType Directory -Force PrivacyPic/out/Guard | Out-Null
-          cl /nologo /LD /EHsc /O2 /std:c++17 PrivacyPic/src/PrivacyPic.Guard/guard.cpp /link /OUT:PrivacyPic/out/Guard/privacypic_guard.dll bcrypt.lib advapi32.lib
+          New-Item -ItemType Directory -Force PrivacyPic/out/OwnerSecrets | Out-Null
 
-      - name: Build Rust core
+          $rsa = [System.Security.Cryptography.RSA]::Create()
+          $rsa.KeySize = 3072
+
+          $publicPem = $rsa.ExportSubjectPublicKeyInfoPem()
+          $privatePem = $rsa.ExportPkcs8PrivateKeyPem()
+          $privateDer = $rsa.ExportPkcs8PrivateKey()
+          $privateB64 = [Convert]::ToBase64String($privateDer)
+
+          $securityPath = "PrivacyPic/src/PrivacyPic.Core/src/security.rs"
+          $securityText = Get-Content -Raw -Encoding UTF8 $securityPath
+          if (-not $securityText.Contains("__PUBLIC_KEY_PEM__")) { throw "Rust public-key placeholder missing" }
+          $securityText = $securityText.Replace("__PUBLIC_KEY_PEM__", $publicPem)
+          [IO.File]::WriteAllText($securityPath, $securityText, [Text.UTF8Encoding]::new($false))
+
+          $javaPath = "PrivacyPic/src/PrivacyPic.LicenseManager/src/main/java/jp/autocat/privacypic/license/LicenseManagerApp.java"
+          $javaText = Get-Content -Raw -Encoding UTF8 $javaPath
+          if (-not $javaText.Contains("__PRIVATE_KEY_DER_B64__")) { throw "Java private-key placeholder missing" }
+          $javaText = $javaText.Replace("__PRIVATE_KEY_DER_B64__", $privateB64)
+          [IO.File]::WriteAllText($javaPath, $javaText, [Text.UTF8Encoding]::new($false))
+
+          [IO.File]::WriteAllText("PrivacyPic/out/OwnerSecrets/PrivacyPic-public-key.pem", $publicPem, [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText("PrivacyPic/out/OwnerSecrets/PrivacyPic-private-key-BACKUP.pem", $privatePem, [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllBytes("PrivacyPic/out/OwnerSecrets/private-key.pk8", $privateDer)
+
+      - name: Build Rust security and image core
         working-directory: PrivacyPic/src/PrivacyPic.Core
         run: |
           rustc --version
           cargo build --release
 
-      - name: Publish C# app
+      - name: Publish C# UI
         run: |
           dotnet publish PrivacyPic/src/PrivacyPic.App/PrivacyPic.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o PrivacyPic/out/App
+
+      - name: Inject binary hashes into C++ guard
+        run: |
+          $app = "PrivacyPic/out/App/PrivacyPicApp.exe"
+          $core = "PrivacyPic/src/PrivacyPic.Core/target/release/privacypic_core.dll"
+          if (-not (Test-Path $app)) { throw "PrivacyPicApp.exe missing" }
+          if (-not (Test-Path $core)) { throw "privacypic_core.dll missing" }
+
+          $appHash = (Get-FileHash $app -Algorithm SHA256).Hash.ToLowerInvariant()
+          $coreHash = (Get-FileHash $core -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          $guardPath = "PrivacyPic/src/PrivacyPic.Guard/guard.cpp"
+          $guardText = Get-Content -Raw -Encoding UTF8 $guardPath
+          $guardText = $guardText.Replace("__APP_SHA256__", $appHash)
+          $guardText = $guardText.Replace("__CORE_SHA256__", $coreHash)
+          [IO.File]::WriteAllText($guardPath, $guardText, [Text.UTF8Encoding]::new($false))
+
+      - name: Build C++ native guard
+        run: |
+          New-Item -ItemType Directory -Force PrivacyPic/out/Guard | Out-Null
+          cl /nologo /LD /EHsc /O2 /std:c++17 PrivacyPic/src/PrivacyPic.Guard/guard.cpp /link /OUT:PrivacyPic/out/Guard/privacypic_guard.dll bcrypt.lib advapi32.lib
+
+      - name: Inject hashes into Zig launcher
+        run: |
+          $appHash = (Get-FileHash "PrivacyPic/out/App/PrivacyPicApp.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+          $coreHash = (Get-FileHash "PrivacyPic/src/PrivacyPic.Core/target/release/privacypic_core.dll" -Algorithm SHA256).Hash.ToLowerInvariant()
+          $guardHash = (Get-FileHash "PrivacyPic/out/Guard/privacypic_guard.dll" -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          $zigPath = "PrivacyPic/src/PrivacyPic.Launcher/main.zig"
+          $zigText = Get-Content -Raw -Encoding UTF8 $zigPath
+          $zigText = $zigText.Replace("__APP_SHA256__", $appHash)
+          $zigText = $zigText.Replace("__CORE_SHA256__", $coreHash)
+          $zigText = $zigText.Replace("__GUARD_SHA256__", $guardHash)
+          [IO.File]::WriteAllText($zigPath, $zigText, [Text.UTF8Encoding]::new($false))
 
       - name: Build Zig launcher
         run: |
           New-Item -ItemType Directory -Force PrivacyPic/out/Launcher | Out-Null
-          zig build-exe PrivacyPic/src/PrivacyPic.Launcher/main.zig -O ReleaseSmall -fstrip -mwindows -femit-bin=PrivacyPic/out/Launcher/PrivacyPicLauncher.exe
+          zig build-exe PrivacyPic/src/PrivacyPic.Launcher/main.zig -O ReleaseSmall -target x86_64-windows -fstrip -mwindows -femit-bin=PrivacyPic/out/Launcher/PrivacyPic.exe
 
-      - name: Build JavaFX license manager
-        working-directory: PrivacyPic/src/PrivacyPic.LicenseManager.Java
+      - name: Stage user runtime
         run: |
-          mvn -B clean package dependency:copy-dependencies -DoutputDirectory=target/package-input
-          Copy-Item target/license-manager-2.0.0.jar target/package-input/license-manager-2.0.0.jar
-          New-Item -ItemType Directory -Force ../../../out/JavaManager | Out-Null
-          jpackage --type app-image --name PrivacyPicLicenseManager --input target/package-input --main-jar license-manager-2.0.0.jar --main-class jp.privacypic.license.Launcher --dest ../../../out/JavaManager --java-options "-Dfile.encoding=UTF-8"
+          New-Item -ItemType Directory -Force PrivacyPic/stage/User | Out-Null
+          Copy-Item PrivacyPic/out/Launcher/PrivacyPic.exe PrivacyPic/stage/User/PrivacyPic.exe
+          Copy-Item PrivacyPic/out/App/PrivacyPicApp.exe PrivacyPic/stage/User/PrivacyPicApp.exe
+          Copy-Item PrivacyPic/src/PrivacyPic.Core/target/release/privacypic_core.dll PrivacyPic/stage/User/privacypic_core.dll
+          Copy-Item PrivacyPic/out/Guard/privacypic_guard.dll PrivacyPic/stage/User/privacypic_guard.dll
 
-      - name: Stage safe raw artifacts
+      - name: Create signed integrity manifest
         run: |
-          New-Item -ItemType Directory -Force PrivacyPic/stage/UserRaw | Out-Null
-          New-Item -ItemType Directory -Force PrivacyPic/stage/OwnerRaw | Out-Null
+          $userDir = (Resolve-Path "PrivacyPic/stage/User").Path
+          $names = @("PrivacyPic.exe", "PrivacyPicApp.exe", "privacypic_core.dll", "privacypic_guard.dll")
+          $files = [ordered]@{}
+          foreach ($name in $names) {
+            $files[$name] = (Get-FileHash (Join-Path $userDir $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+          }
 
-          Copy-Item PrivacyPic/out/App/PrivacyPic.exe PrivacyPic/stage/UserRaw/PrivacyPic.exe
-          Copy-Item PrivacyPic/src/PrivacyPic.Core/target/release/privacypic_core.dll PrivacyPic/stage/UserRaw/privacypic_core.dll
-          Copy-Item PrivacyPic/out/Guard/privacypic_guard.dll PrivacyPic/stage/UserRaw/privacypic_guard.dll
-          Copy-Item PrivacyPic/out/Launcher/PrivacyPicLauncher.exe PrivacyPic/stage/UserRaw/PrivacyPicLauncher.exe
-          Copy-Item PrivacyPic/README.md PrivacyPic/stage/UserRaw/README.md
+          $manifest = [ordered]@{
+            version = 1
+            files = $files
+          }
+          $json = $manifest | ConvertTo-Json -Depth 5 -Compress
+          $manifestPath = Join-Path $userDir "integrity.json"
+          [IO.File]::WriteAllText($manifestPath, $json, [Text.UTF8Encoding]::new($false))
 
-          Copy-Item -Recurse PrivacyPic/out/JavaManager/PrivacyPicLicenseManager PrivacyPic/stage/OwnerRaw/PrivacyPicLicenseManager
+          $privateDer = [IO.File]::ReadAllBytes("PrivacyPic/out/OwnerSecrets/private-key.pk8")
+          $rsa = [System.Security.Cryptography.RSA]::Create()
+          $read = 0
+          $rsa.ImportPkcs8PrivateKey($privateDer, [ref]$read)
+          $manifestBytes = [IO.File]::ReadAllBytes($manifestPath)
+          $sig = $rsa.SignData(
+            $manifestBytes,
+            [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+            [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
+          )
+          [IO.File]::WriteAllText(
+            (Join-Path $userDir "integrity.sig"),
+            [Convert]::ToBase64String($sig),
+            [Text.UTF8Encoding]::new($false)
+          )
 
-      - name: Upload raw Windows builds
+      - name: Build JavaFX private license manager
+        working-directory: PrivacyPic/src/PrivacyPic.LicenseManager
+        run: |
+          mvn -B clean javafx:jlink
+
+      - name: Stage owner package
+        run: |
+          New-Item -ItemType Directory -Force PrivacyPic/stage/Owner | Out-Null
+
+          Copy-Item -Recurse PrivacyPic/src/PrivacyPic.LicenseManager/target/PrivacyPicLicenseRuntime PrivacyPic/stage/Owner/PrivacyPicLicenseManager
+          Copy-Item PrivacyPic/out/OwnerSecrets/PrivacyPic-public-key.pem PrivacyPic/stage/Owner/PrivacyPic-public-key.pem
+          Copy-Item PrivacyPic/out/OwnerSecrets/PrivacyPic-private-key-BACKUP.pem PrivacyPic/stage/Owner/PrivacyPic-private-key-BACKUP.pem
+
+          $important = @(
+            "PRIVACYPIC OWNER PACKAGE - PRIVATE",
+            "",
+            "このフォルダは購入者へ絶対に配布しないでください。",
+            "PrivacyPicLicenseManager と private-key backup はProライセンスを発行できます。",
+            "",
+            "販売手順:",
+            "1. 購入者に PrivacyPic.exe を起動してもらう",
+            "2. 表示された端末IDを受け取る",
+            "3. Java製 License Manager に注文IDと端末IDを入力",
+            "4. .lic を発行して購入者へ送る",
+            "5. 購入者が PrivacyPic の Proライセンス読込 から .lic を読み込む"
+          )
+          [IO.File]::WriteAllLines("PrivacyPic/stage/Owner/IMPORTANT.txt", $important, [Text.UTF8Encoding]::new($false))
+
+      - name: Add user README
+        run: |
+          $readme = @(
+            "PrivacyPic v2 - Windows x64",
+            "",
+            "PrivacyPic.exe を起動してください。",
+            "PrivacyPicApp.exe を直接起動しないでください。",
+            "",
+            "Free: 1回5枚まで安全化",
+            "Pro: 端末固定ライセンス / 枚数無制限 / フォルダ一括",
+            "",
+            "対応: JPG/JPEG, PNG, WebP",
+            "元画像は変更せず PrivacyPic_Safe にコピーを保存します。"
+          )
+          [IO.File]::WriteAllLines("PrivacyPic/stage/User/README.txt", $readme, [Text.UTF8Encoding]::new($false))
+
+      - name: Create ZIP packages
+        run: |
+          Compress-Archive -Path PrivacyPic/stage/User/* -DestinationPath PrivacyPic/PrivacyPic-v2-5Lang-Windows-x64.zip -Force
+          Compress-Archive -Path PrivacyPic/stage/Owner/* -DestinationPath PrivacyPic/PrivacyPic-v2-LicenseManager-PRIVATE.zip -Force
+
+      - name: Upload packages temporarily
         uses: actions/upload-artifact@v4
         with:
-          name: PrivacyPic-5Lang-Raw
-          path: PrivacyPic/stage
+          name: PrivacyPic-v2-5Lang-Packages
+          path: |
+            PrivacyPic/PrivacyPic-v2-5Lang-Windows-x64.zip
+            PrivacyPic/PrivacyPic-v2-LicenseManager-PRIVATE.zip
           if-no-files-found: error
+          retention-days: 1
