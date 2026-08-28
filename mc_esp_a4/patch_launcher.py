@@ -58,3 +58,9 @@ gs = {
 }
 (root / "app/google-services.json").write_text(json.dumps(gs))
 (root / "local.properties").write_text("curseforge.api_key=\n")
+
+# Pin MinecraftAuth to avoid JitPack main-SNAPSHOT metadata timeouts.
+versions = root / "gradle/libs.versions.toml"
+vs = versions.read_text()
+vs = vs.replace('minecraftauth = "main-SNAPSHOT"', 'minecraftauth = "ed320a0e882cbfd5d793e4fc9a92be0739b2bfb8"')
+versions.write_text(vs)
