@@ -46,7 +46,17 @@ jobs:
         working-directory: launcher
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleDebug --stacktrace --no-daemon
+          for attempt in 1 2 3 4; do
+            echo "Gradle build attempt $attempt/4"
+            if ./gradlew :app:assembleDebug --stacktrace --no-daemon; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              echo "Dependency/network failure; retrying..."
+              sleep 20
+            fi
+          done
+          exit 1
 
       - name: Collect
         run: |
