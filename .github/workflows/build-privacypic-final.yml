@@ -88,7 +88,7 @@ jobs:
           mvn -B clean package dependency:copy-dependencies -DoutputDirectory=target/package-input
           Copy-Item target/license-manager-2.0.0.jar target/package-input/license-manager-2.0.0.jar
           New-Item -ItemType Directory -Force ../../out/JavaManager | Out-Null
-          jpackage --type app-image --name PrivacyPicLicenseManager --input target/package-input --main-jar license-manager-2.0.0.jar --main-class jp.privacypic.license.Launcher --dest ../../../out/JavaManager --java-options "-Dfile.encoding=UTF-8"
+          jpackage --type app-image --name PrivacyPicLicenseManager --input target/package-input --main-jar license-manager-2.0.0.jar --main-class jp.privacypic.license.Launcher --dest ../../out/JavaManager --java-options "-Dfile.encoding=UTF-8"
 
       - name: Stage public-safe raw binaries
         run: |
