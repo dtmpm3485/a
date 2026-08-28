@@ -8,6 +8,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
+import android.widget.Button;
 
 import java.util.WeakHashMap;
 
@@ -16,6 +17,7 @@ public final class EspOverlayView extends View {
     private static final int MAX = 256;
     private static final WeakHashMap<Activity, EspOverlayView> ATTACHED = new WeakHashMap<>();
     private static volatile boolean nativeLoaded;
+    private static volatile boolean espEnabled = true;
 
     static {
         try {
@@ -72,6 +74,34 @@ public final class EspOverlayView extends View {
                             Gravity.TOP | Gravity.START);
                     activity.addContentView(v, lp);
                     ATTACHED.put(activity, v);
+
+                    Button toggle = new Button(activity);
+                    toggle.setAllCaps(false);
+                    toggle.setText("ESP ON");
+                    toggle.setTextColor(Color.WHITE);
+                    toggle.setTextSize(14f);
+                    toggle.setPadding(10, 0, 10, 0);
+                    toggle.setBackgroundColor(Color.argb(180, 25, 25, 25));
+
+                    float d = activity.getResources().getDisplayMetrics().density;
+                    FrameLayout.LayoutParams tlp = new FrameLayout.LayoutParams(
+                            (int)(108 * d),
+                            (int)(46 * d),
+                            Gravity.TOP | Gravity.START);
+                    tlp.leftMargin = (int)(12 * d);
+                    tlp.topMargin = (int)(62 * d);
+
+                    toggle.setOnClickListener(btn -> {
+                        espEnabled = !espEnabled;
+                        try {
+                            nativeSetEspEnabled(espEnabled);
+                        } catch (Throwable ignored) {}
+                        toggle.setText(espEnabled ? "ESP ON" : "ESP OFF");
+                        toggle.setBackgroundColor(espEnabled
+                                ? Color.argb(190, 20, 90, 35)
+                                : Color.argb(190, 110, 30, 30));
+                    });
+                    activity.addContentView(toggle, tlp);
                 }
             }
 
@@ -113,7 +143,7 @@ public final class EspOverlayView extends View {
         }
         float w = getWidth(), h = getHeight();
 
-        String dbg = "A5 native=" + nativeLoaded + " retry=" + retryCount;
+        String dbg = "A5 " + (espEnabled ? "ON" : "OFF") + " native=" + nativeLoaded + " retry=" + retryCount;
         if (nativeLoaded) {
             try {
                 String n = nativeGetDebugStatus();
@@ -147,4 +177,6 @@ public final class EspOverlayView extends View {
     private static native boolean nativeInstallEsp();
     private static native int nativeFillEspSnapshot(float[] output);
     private static native String nativeGetDebugStatus();
+    private static native void nativeSetEspEnabled(boolean enabled);
+    private static native boolean nativeIsEspEnabled();
 }
