@@ -195,7 +195,7 @@ public final class LicenseManagerApp extends Application {
     }
 
     private static String safeFilePart(String value) {
-        String s = value.replaceAll("[\\\\/:*?\\"<>|]", "_");
+        String s = value.replaceAll("[\\\\/:*?<>|]", "_").replace('"', '_');
         return s.isBlank() ? "license" : s;
     }
 
