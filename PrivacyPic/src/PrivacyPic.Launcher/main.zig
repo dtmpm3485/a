@@ -9,7 +9,7 @@ pub fn main() !void {
     defer allocator.free(exe_dir);
 
     const required = [_][]const u8{
-        "PrivacyPic.exe",
+        "PrivacyPicApp.exe",
         "privacypic_core.dll",
         "privacypic_guard.dll",
         "integrity.json",
@@ -26,17 +26,11 @@ pub fn main() !void {
         file.close();
     }
 
-    const app_path = try std.fs.path.join(allocator, &.{ exe_dir, "PrivacyPic.exe" });
+    const app_path = try std.fs.path.join(allocator, &.{ exe_dir, "PrivacyPicApp.exe" });
     defer allocator.free(app_path);
 
-    var env_map = try std.process.getEnvMap(allocator);
-    defer env_map.deinit();
-    try env_map.put("PRIVACYPIC_LAUNCH_TOKEN", "PP2-PRIVACYPIC-LAUNCHER-V2");
-
-    const argv = [_][]const u8{app_path};
+    const argv = [_][]const u8{ app_path, "--pp-launch-v2" };
     var child = std.process.Child.init(&argv, allocator);
     child.cwd = exe_dir;
-    child.env_map = &env_map;
-
     _ = try child.spawnAndWait();
 }
