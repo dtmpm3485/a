@@ -105,14 +105,14 @@ public final class LicenseManagerApp extends Application {
             }
 
             Instant issued = Instant.now();
-            String expires = "NEVER";
+            long expires = 0L;
             if (expiring.isSelected()) {
                 LocalDate date = expiryDate.getValue();
                 if (date == null) throw new IllegalArgumentException("有効期限の日付を選択してください。");
                 LocalDateTime local = date.atTime(expiryHour.getValue(), expiryMinute.getValue(), 59);
                 Instant exp = local.atZone(ZoneId.systemDefault()).toInstant();
                 if (!exp.isAfter(issued)) throw new IllegalArgumentException("有効期限は現在より後にしてください。");
-                expires = DateTimeFormatter.ISO_INSTANT.format(exp);
+                expires = exp.getEpochSecond();
             }
 
             String licenseId = UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
