@@ -8,7 +8,7 @@
 #include <time.h>
 #include <shadowhook.h>
 
-#define LOG_TAG "MCESP2644A8"
+#define LOG_TAG "MCESP2644A9"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
@@ -54,6 +54,7 @@ static uint64_t camera_ok = 0;
 static uint64_t last_project_ms = 0;
 static uint64_t last_discovery_ms = 0;
 static uint32_t last_candidate_count = 0;
+static uint32_t last_raw_candidate_count = 0;
 static char last_status[160] = "not installed";
 
 static pthread_mutex_t esp_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -168,16 +169,30 @@ static int actor_pointer_plausible(uintptr_t actor) {
            vptr < minecraft_load_bias + 0x13000000ULL;
 }
 
-static int classify_actor(void* actor) {
-    if (!actor || !minecraft_load_bias || !readable((uintptr_t)actor, 8)) return CAT_NONE;
-    uintptr_t vptr = strip_ptr(*(uintptr_t*)actor);
-    if (vptr < minecraft_load_bias) return CAT_NONE;
-    uintptr_t rva = vptr - minecraft_load_bias;
+#define AC_PLAYER  (1u << 0)
+#define AC_MOB     (1u << 1)
+#define AC_MONSTER (1u << 2)
+#define AC_ANIMAL  (1u << 4)
 
-    if (rva == LOCAL_PLAYER_VPTR_RVA) return CAT_NONE;
-    if (in_list(rva,PLAYER_VPTRS,sizeof(PLAYER_VPTRS)/sizeof(PLAYER_VPTRS[0]))) return CAT_PLAYER;
-    if (in_list(rva,ANIMAL_VPTRS,sizeof(ANIMAL_VPTRS)/sizeof(ANIMAL_VPTRS[0]))) return CAT_ANIMAL;
-    if (in_list(rva,MOB_VPTRS,sizeof(MOB_VPTRS)/sizeof(MOB_VPTRS[0]))) return CAT_MOB;
+static int classify_actor(void* actor, uintptr_t builtins_off) {
+    if (!actor || !minecraft_load_bias) return CAT_NONE;
+
+    uintptr_t vptr = strip_ptr(*(uintptr_t*)actor);
+    if (vptr >= minecraft_load_bias) {
+        uintptr_t rva = vptr - minecraft_load_bias;
+        if (rva == LOCAL_PLAYER_VPTR_RVA) return CAT_NONE;
+        if (in_list(rva,PLAYER_VPTRS,sizeof(PLAYER_VPTRS)/sizeof(PLAYER_VPTRS[0]))) return CAT_PLAYER;
+        if (in_list(rva,ANIMAL_VPTRS,sizeof(ANIMAL_VPTRS)/sizeof(ANIMAL_VPTRS[0]))) return CAT_ANIMAL;
+        if (in_list(rva,MOB_VPTRS,sizeof(MOB_VPTRS)/sizeof(MOB_VPTRS[0]))) return CAT_MOB;
+    }
+
+    if (builtins_off >= 8) {
+        uint32_t categories = 0;
+        memcpy(&categories,(uint8_t*)actor+builtins_off-8,sizeof(categories));
+        if (categories & AC_PLAYER) return CAT_PLAYER;
+        if (categories & AC_ANIMAL) return CAT_ANIMAL;
+        if (categories & (AC_MONSTER|AC_MOB)) return CAT_MOB;
+    }
     return CAT_NONE;
 }
 
@@ -221,9 +236,10 @@ static uintptr_t discover_builtins(void* actor) {
     return 0;
 }
 
-static int actor_box(void* actor,V3* bottom,V3* top) {
+static int actor_box(void* actor,V3* bottom,V3* top,uintptr_t* out_off) {
     uintptr_t off=discover_builtins(actor);
-    if (!off || !readable((uintptr_t)actor+off,16)) return 0;
+    if (!off) return 0;
+    if (out_off) *out_off=off;
 
     void* state=NULL; void* shape=NULL;
     memcpy(&state,(uint8_t*)actor+off,8);
@@ -231,7 +247,7 @@ static int actor_box(void* actor,V3* bottom,V3* top) {
     state=(void*)strip_ptr((uintptr_t)state);
     shape=(void*)strip_ptr((uintptr_t)shape);
 
-    if (shape && readable((uintptr_t)shape,24)) {
+    if (shape) {
         V3 mn,mx;
         memcpy(&mn,shape,12);
         memcpy(&mx,(uint8_t*)shape+12,12);
@@ -244,7 +260,7 @@ static int actor_box(void* actor,V3* bottom,V3* top) {
         }
     }
 
-    if (state && readable((uintptr_t)state,12)) {
+    if (state) {
         V3 p;
         memcpy(&p,state,12);
         if (sane_v3(p)) {
@@ -259,11 +275,11 @@ static int actor_box(void* actor,V3* bottom,V3* top) {
 static int read_camera(void* render_context,
                        V3* right,V3* up,V3* forward,V3* camera_pos,
                        float* aspect,float* fov) {
-    if (!render_context || !readable((uintptr_t)render_context+0x28,8)) return 0;
+    if (!render_context) return 0;
     void* screen_context=*(void**)((uint8_t*)render_context+0x28);
-    if (!screen_context || !readable((uintptr_t)screen_context+0x18,8)) return 0;
+    if (!screen_context) return 0;
     void* camera=*(void**)((uint8_t*)screen_context+0x18);
-    if (!camera || !readable((uintptr_t)camera+0x138,4)) return 0;
+    if (!camera) return 0;
 
     memcpy(right,(uint8_t*)camera+0x100,12);
     memcpy(up,(uint8_t*)camera+0x10c,12);
@@ -335,11 +351,12 @@ static void snapshot_candidates(void* candidates) {
     uintptr_t temp[MAX_ESP];
     uint32_t count=0;
     uint64_t n=bytes/8;
+    last_raw_candidate_count=(uint32_t)(n>0xffffffffULL?0xffffffffULL:n);
     for (uint64_t i=0;i<n && count<MAX_ESP;i++) {
         uintptr_t actor=0;
         memcpy(&actor,(void*)(begin+i*8),8);
         actor=strip_ptr(actor);
-        if (!actor_pointer_plausible(actor)) continue;
+        if (actor<0x10000ULL) continue;
         temp[count++]=actor;
     }
 
@@ -377,15 +394,16 @@ static void project_snapshot(void* render_context) {
 
     for (uint32_t i=0;i<count;i++) {
         void* actor=(void*)local[i];
-        if (!actor_pointer_plausible((uintptr_t)actor)) continue;
+        if (!actor) continue;
         __atomic_add_fetch(&actors_seen,1,__ATOMIC_RELAXED);
 
-        int category=classify_actor(actor);
+        V3 bw,tw;
+        uintptr_t builtins_off=0;
+        if (!actor_box(actor,&bw,&tw,&builtins_off)) continue;
+
+        int category=classify_actor(actor,builtins_off);
         if (!category) continue;
         __atomic_add_fetch(&classified_calls,1,__ATOMIC_RELAXED);
-
-        V3 bw,tw;
-        if (!actor_box(actor,&bw,&tw)) continue;
 
         V3 rb=sub3(bw,camera_pos), rt=sub3(tw,camera_pos);
         float bx,by,tx,ty;
@@ -498,10 +516,11 @@ Java_org_levimc_launcher_core_minecraft_EspOverlayView_nativeGetDebugStatus(
     (void)cls;
     char buf[440];
     snprintf(buf,sizeof(buf),
-        "A8 %s | render=%llu | gather=%llu | cand=%u | seen=%llu | pos=%llu | class=%llu | proj=%llu | cam=%llu | layout=0x%llx",
+        "A9 %s | render=%llu | gather=%llu | raw=%u | cand=%u | seen=%llu | pos=%llu | class=%llu | proj=%llu | cam=%llu | layout=0x%llx",
         last_status,
         (unsigned long long)__atomic_load_n(&render_calls,__ATOMIC_RELAXED),
         (unsigned long long)__atomic_load_n(&gather_calls,__ATOMIC_RELAXED),
+        last_raw_candidate_count,
         last_candidate_count,
         (unsigned long long)__atomic_load_n(&actors_seen,__ATOMIC_RELAXED),
         (unsigned long long)__atomic_load_n(&position_ok,__ATOMIC_RELAXED),
