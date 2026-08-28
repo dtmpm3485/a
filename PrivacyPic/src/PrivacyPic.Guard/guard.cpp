@@ -7,104 +7,105 @@
 #include <iomanip>
 
 #pragma comment(lib, "bcrypt.lib")
+#pragma comment(lib, "advapi32.lib")
 
-static const char* EXPECTED_APP_SHA256 = "__APP_SHA256__";
-static const char* EXPECTED_CORE_SHA256 = "__CORE_SHA256__";
-
-static std::wstring exe_dir() {
-    wchar_t buf[32768] = {};
-    DWORD n = GetModuleFileNameW(nullptr, buf, static_cast<DWORD>(std::size(buf)));
-    if (n == 0 || n >= std::size(buf)) return L"";
-    std::wstring p(buf, n);
-    const auto pos = p.find_last_of(L"\\/");
-    return pos == std::wstring::npos ? L"" : p.substr(0, pos);
+static std::wstring read_machine_guid() {
+    wchar_t buffer[256] = {};
+    DWORD size = sizeof(buffer);
+    LONG rc = RegGetValueW(
+        HKEY_LOCAL_MACHINE,
+        L"SOFTWARE\\Microsoft\\Cryptography",
+        L"MachineGuid",
+        RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY,
+        nullptr,
+        buffer,
+        &size
+    );
+    return rc == ERROR_SUCCESS ? std::wstring(buffer) : L"";
 }
 
-static std::wstring current_exe() {
-    wchar_t buf[32768] = {};
-    DWORD n = GetModuleFileNameW(nullptr, buf, static_cast<DWORD>(std::size(buf)));
-    if (n == 0 || n >= std::size(buf)) return L"";
-    return std::wstring(buf, n);
+static DWORD system_volume_serial() {
+    wchar_t winDir[MAX_PATH] = {};
+    if (!GetWindowsDirectoryW(winDir, MAX_PATH)) return 0;
+    wchar_t root[4] = L"C:\\";
+    if (winDir[1] == L':') root[0] = winDir[0];
+    DWORD serial = 0;
+    GetVolumeInformationW(root, nullptr, 0, &serial, nullptr, nullptr, nullptr, 0);
+    return serial;
 }
 
-static bool sha256_file(const std::wstring& path, std::string& out_hex) {
-    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                              FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) return false;
+static std::wstring computer_name() {
+    wchar_t name[256] = {};
+    DWORD len = 256;
+    if (!GetComputerNameW(name, &len)) return L"";
+    return std::wstring(name, len);
+}
 
+static bool sha256(const BYTE* data, ULONG len, BYTE out[32]) {
     BCRYPT_ALG_HANDLE alg = nullptr;
     BCRYPT_HASH_HANDLE hash = nullptr;
-    DWORD object_len = 0, cb = 0, hash_len = 0;
-    std::vector<UCHAR> object;
-    std::vector<UCHAR> digest;
-    bool ok = false;
+    DWORD objectLen = 0, cb = 0;
+    std::vector<BYTE> object;
 
-    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0) goto cleanup;
-    if (BCryptGetProperty(alg, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&object_len),
-                          sizeof(object_len), &cb, 0) != 0) goto cleanup;
-    if (BCryptGetProperty(alg, BCRYPT_HASH_LENGTH, reinterpret_cast<PUCHAR>(&hash_len),
-                          sizeof(hash_len), &cb, 0) != 0) goto cleanup;
-
-    object.resize(object_len);
-    digest.resize(hash_len);
-
-    if (BCryptCreateHash(alg, &hash, object.data(), object_len, nullptr, 0, 0) != 0) goto cleanup;
-
-    {
-        std::vector<UCHAR> buf(64 * 1024);
-        DWORD read = 0;
-        while (ReadFile(file, buf.data(), static_cast<DWORD>(buf.size()), &read, nullptr) && read > 0) {
-            if (BCryptHashData(hash, buf.data(), read, 0) != 0) goto cleanup;
-        }
+    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0) return false;
+    if (BCryptGetProperty(alg, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&objectLen), sizeof(objectLen), &cb, 0) != 0) {
+        BCryptCloseAlgorithmProvider(alg, 0);
+        return false;
     }
-
-    if (BCryptFinishHash(hash, digest.data(), hash_len, 0) != 0) goto cleanup;
-
-    {
-        std::ostringstream ss;
-        ss << std::hex << std::setfill('0');
-        for (UCHAR b : digest) ss << std::setw(2) << static_cast<int>(b);
-        out_hex = ss.str();
+    object.resize(objectLen);
+    if (BCryptCreateHash(alg, &hash, object.data(), objectLen, nullptr, 0, 0) != 0) {
+        BCryptCloseAlgorithmProvider(alg, 0);
+        return false;
     }
-    ok = true;
+    bool ok =
+        BCryptHashData(hash, const_cast<PUCHAR>(data), len, 0) == 0 &&
+        BCryptFinishHash(hash, out, 32, 0) == 0;
 
-cleanup:
-    if (hash) BCryptDestroyHash(hash);
-    if (alg) BCryptCloseAlgorithmProvider(alg, 0);
-    CloseHandle(file);
+    BCryptDestroyHash(hash);
+    BCryptCloseAlgorithmProvider(alg, 0);
     return ok;
 }
 
-static bool equal_ascii_ci(const std::string& a, const char* b) {
-    if (!b || a.size() != strlen(b)) return false;
-    unsigned char diff = 0;
-    for (size_t i = 0; i < a.size(); ++i) {
-        char x = a[i], y = b[i];
-        if (x >= 'A' && x <= 'Z') x = static_cast<char>(x + 32);
-        if (y >= 'A' && y <= 'Z') y = static_cast<char>(y + 32);
-        diff |= static_cast<unsigned char>(x ^ y);
-    }
-    return diff == 0;
+extern "C" __declspec(dllexport)
+int pp_guard_launcher_ok() {
+    wchar_t token[128] = {};
+    DWORD len = GetEnvironmentVariableW(L"PRIVACYPIC_LAUNCH_TOKEN", token, 128);
+    if (len == 0 || len >= 128) return 0;
+    std::wstring value(token, len);
+    if (value.rfind(L"PP2-", 0) != 0 || value.size() < 20) return 0;
+    return 1;
 }
 
-extern "C" __declspec(dllexport) int __cdecl pp_guard_check() {
-    // Gate A: require the Zig launcher handoff argument.
-    const wchar_t* cmd = GetCommandLineW();
-    if (!cmd || wcsstr(cmd, L"--pp-launch-v2") == nullptr) return 11;
+extern "C" __declspec(dllexport)
+int pp_guard_get_device_id(wchar_t* output, size_t capacity) {
+    if (!output || capacity < 38) return -1;
 
-    // Gate B: verify the C# application binary has not changed.
-    std::string app_hash;
-    if (!sha256_file(current_exe(), app_hash)) return 21;
-    if (!equal_ascii_ci(app_hash, EXPECTED_APP_SHA256)) return 22;
+    const std::wstring guid = read_machine_guid();
+    const std::wstring name = computer_name();
+    const DWORD serial = system_volume_serial();
+    if (guid.empty() || name.empty() || serial == 0) return -2;
 
-    // Gate C: verify the Rust core has not changed.
-    const std::wstring dir = exe_dir();
-    if (dir.empty()) return 31;
-    const std::wstring core = dir + L"\\privacypic_core.dll";
+    std::wstringstream material;
+    material << guid << L"|" << name << L"|" << std::hex << serial;
+    const std::wstring raw = material.str();
 
-    std::string core_hash;
-    if (!sha256_file(core, core_hash)) return 32;
-    if (!equal_ascii_ci(core_hash, EXPECTED_CORE_SHA256)) return 33;
+    BYTE digest[32] = {};
+    const BYTE* bytes = reinterpret_cast<const BYTE*>(raw.data());
+    const ULONG byteLen = static_cast<ULONG>(raw.size() * sizeof(wchar_t));
+    if (!sha256(bytes, byteLen, digest)) return -3;
 
-    return 0;
+    std::wstringstream id;
+    id << L"PP2-";
+    for (int i = 0; i < 16; ++i) {
+        id << std::hex << std::setw(2) << std::setfill(L'0') << static_cast<int>(digest[i]);
+    }
+
+    const std::wstring value = id.str();
+    if (value.size() + 1 > capacity) return -4;
+    wcsncpy_s(output, capacity, value.c_str(), _TRUNCATE);
+    return static_cast<int>(value.size());
+}
+
+BOOL APIENTRY DllMain(HMODULE, DWORD, LPVOID) {
+    return TRUE;
 }
