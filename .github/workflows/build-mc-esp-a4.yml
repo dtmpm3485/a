@@ -46,6 +46,7 @@ jobs:
         working-directory: launcher
         run: |
           chmod +x gradlew
+          export GRADLE_OPTS="-Dorg.gradle.internal.http.socketTimeout=120000 -Dorg.gradle.internal.http.connectionTimeout=60000"
           for attempt in 1 2 3 4; do
             echo "Gradle build attempt $attempt/4"
             if ./gradlew :app:assembleDebug --stacktrace --no-daemon; then
