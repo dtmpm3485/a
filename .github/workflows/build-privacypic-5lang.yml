@@ -1,0 +1,92 @@
+name: Build PrivacyPic 5-Language
+
+on:
+  push:
+    branches:
+      - privacypic-5lang
+    paths:
+      - "PrivacyPic/**"
+      - ".github/workflows/build-privacypic-5lang.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: "0.13.0"
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build C++ guard
+        run: |
+          New-Item -ItemType Directory -Force PrivacyPic/out/Guard | Out-Null
+          cl /nologo /LD /EHsc /O2 /std:c++17 PrivacyPic/src/PrivacyPic.Guard/guard.cpp /link /OUT:PrivacyPic/out/Guard/privacypic_guard.dll bcrypt.lib advapi32.lib
+
+      - name: Build Rust core
+        working-directory: PrivacyPic/src/PrivacyPic.Core
+        run: |
+          rustc --version
+          cargo build --release
+
+      - name: Publish C# app
+        run: |
+          dotnet publish PrivacyPic/src/PrivacyPic.App/PrivacyPic.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o PrivacyPic/out/App
+
+      - name: Build Zig launcher
+        run: |
+          New-Item -ItemType Directory -Force PrivacyPic/out/Launcher | Out-Null
+          zig build-exe PrivacyPic/src/PrivacyPic.Launcher/main.zig -O ReleaseSmall -fstrip -mwindows -femit-bin=PrivacyPic/out/Launcher/PrivacyPicLauncher.exe
+
+      - name: Build JavaFX license manager
+        working-directory: PrivacyPic/src/PrivacyPic.LicenseManager.Java
+        run: |
+          mvn -B clean package dependency:copy-dependencies -DoutputDirectory=target/package-input
+          Copy-Item target/license-manager-2.0.0.jar target/package-input/license-manager-2.0.0.jar
+          New-Item -ItemType Directory -Force ../../../out/JavaManager | Out-Null
+          jpackage --type app-image --name PrivacyPicLicenseManager --input target/package-input --main-jar license-manager-2.0.0.jar --main-class jp.privacypic.license.Launcher --dest ../../../out/JavaManager --java-options "-Dfile.encoding=UTF-8"
+
+      - name: Stage safe raw artifacts
+        run: |
+          New-Item -ItemType Directory -Force PrivacyPic/stage/UserRaw | Out-Null
+          New-Item -ItemType Directory -Force PrivacyPic/stage/OwnerRaw | Out-Null
+
+          Copy-Item PrivacyPic/out/App/PrivacyPic.exe PrivacyPic/stage/UserRaw/PrivacyPic.exe
+          Copy-Item PrivacyPic/src/PrivacyPic.Core/target/release/privacypic_core.dll PrivacyPic/stage/UserRaw/privacypic_core.dll
+          Copy-Item PrivacyPic/out/Guard/privacypic_guard.dll PrivacyPic/stage/UserRaw/privacypic_guard.dll
+          Copy-Item PrivacyPic/out/Launcher/PrivacyPicLauncher.exe PrivacyPic/stage/UserRaw/PrivacyPicLauncher.exe
+          Copy-Item PrivacyPic/README.md PrivacyPic/stage/UserRaw/README.md
+
+          Copy-Item -Recurse PrivacyPic/out/JavaManager/PrivacyPicLicenseManager PrivacyPic/stage/OwnerRaw/PrivacyPicLicenseManager
+
+      - name: Upload raw Windows builds
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrivacyPic-5Lang-Raw
+          path: PrivacyPic/stage
+          if-no-files-found: error
