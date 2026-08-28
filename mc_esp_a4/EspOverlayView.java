@@ -30,6 +30,9 @@ public final class EspOverlayView extends View {
     private final Paint player = paint(Color.rgb(0, 255, 80));
     private final Paint mob = paint(Color.rgb(255, 45, 45));
     private final Paint animal = paint(Color.rgb(255, 105, 180));
+    private final Paint debugPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private volatile boolean installDone;
+    private int retryCount;
 
     private EspOverlayView(Activity activity) {
         super(activity);
@@ -42,6 +45,10 @@ public final class EspOverlayView extends View {
         player.setStrokeWidth(stroke);
         mob.setStrokeWidth(stroke);
         animal.setStrokeWidth(stroke);
+        debugPaint.setColor(Color.WHITE);
+        debugPaint.setTextSize(Math.max(24f, 12f * d));
+        debugPaint.setStyle(Paint.Style.FILL);
+        debugPaint.setShadowLayer(4f, 0f, 0f, Color.BLACK);
     }
 
     private static Paint paint(int color) {
@@ -69,13 +76,30 @@ public final class EspOverlayView extends View {
             }
 
             if (nativeLoaded) {
-                activity.getWindow().getDecorView().postDelayed(() -> {
-                    try {
-                        nativeInstallEsp();
-                    } catch (Throwable ignored) {}
-                }, 1500);
+                EspOverlayView target;
+                synchronized (ATTACHED) {
+                    target = ATTACHED.get(activity);
+                }
+                if (target != null) target.scheduleInstallRetry();
             }
         });
+    }
+
+    private void scheduleInstallRetry() {
+        if (installDone || retryCount >= 80) return;
+        postDelayed(() -> {
+            if (installDone) return;
+            retryCount++;
+            try {
+                installDone = nativeInstallEsp();
+            } catch (Throwable ignored) {
+                installDone = false;
+            }
+            if (!installDone) {
+                scheduleInstallRetry();
+            }
+            invalidate();
+        }, retryCount == 0 ? 800 : 500);
     }
 
     @Override
@@ -88,6 +112,16 @@ public final class EspOverlayView extends View {
             } catch (Throwable ignored) {}
         }
         float w = getWidth(), h = getHeight();
+
+        String dbg = "A5 native=" + nativeLoaded + " retry=" + retryCount;
+        if (nativeLoaded) {
+            try {
+                String n = nativeGetDebugStatus();
+                if (n != null) dbg = n;
+            } catch (Throwable ignored) {}
+        }
+        c.drawText(dbg, 18f, 42f, debugPaint);
+
         count = Math.max(0, Math.min(count, MAX));
         for (int i = 0; i < count; i++) {
             int o = i * STRIDE;
@@ -112,4 +146,5 @@ public final class EspOverlayView extends View {
 
     private static native boolean nativeInstallEsp();
     private static native int nativeFillEspSnapshot(float[] output);
+    private static native String nativeGetDebugStatus();
 }
