@@ -12,7 +12,7 @@ use std::{
     env,
     ffi::c_void,
     fs,
-    os::windows::ffi::OsStrExt,
+    os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
     ptr,
     slice,
