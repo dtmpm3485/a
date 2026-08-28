@@ -1,0 +1,95 @@
+name: Build MC ESP 26.44.3
+
+on:
+  push:
+    branches:
+      - mc-esp-2644
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout patch branch
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "cmake;3.22.1" "ndk;27.0.12077973"
+
+      - name: Prepare launcher source
+        run: |
+          git clone https://github.com/EnderNebula/KafkaLauncher.git launcher
+          cd launcher
+          git checkout 0a72ca62fdab356e04b58fea6858e5bad162027b
+          cp ../mc_esp_patch/minecraft_world_hook.c app/src/main/cpp/minecraft_world_hook.c
+          cp ../mc_esp_patch/EspOverlayView.java app/src/main/java/com/aruked/kafkalauncher/EspOverlayView.java
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("app/src/main/java/com/aruked/kafkalauncher/KafkaApplication.java")
+          s = p.read_text()
+          s = s.replace(
+              "installHooks(activity);",
+              "installHooks(activity);\n                EspOverlayView.attach(activity);"
+          )
+          p.write_text(s)
+
+          p = Path("app/src/main/java/com/aruked/kafkalauncher/MainActivity.java")
+          s = p.read_text()
+          s = s.replace('title.setText("KafkaLauncher");', 'title.setText("MC ESP 26.44.3");')
+          s = s.replace('launch.setText("Launch Minecraft");', 'launch.setText("Minecraft 26.44.3 を起動");')
+          p.write_text(s)
+
+          p = Path("app/src/main/res/values/strings.xml")
+          s = p.read_text()
+          s = s.replace("KafkaLauncher", "MC ESP 26.44.3")
+          p.write_text(s)
+
+          p = Path("app/src/main/cpp/CMakeLists.txt")
+          s = p.read_text()
+          s = s.replace(
+              "target_link_libraries(minecraftpe PRIVATE android log shadowhook::shadowhook)",
+              "target_link_libraries(minecraftpe PRIVATE android log m shadowhook::shadowhook)"
+          )
+          p.write_text(s)
+
+          p = Path("app/build.gradle.kts")
+          s = p.read_text()
+          s = s.replace('versionName = "0.2.0"', 'versionName = "26.44.3-esp-a1"')
+          p.write_text(s)
+          PY
+
+      - name: Build release APK
+        working-directory: launcher
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease --stacktrace --no-daemon
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          cp launcher/app/build/outputs/apk/release/app-release.apk out/MCESP-26.44.3-arm64.apk
+          sha256sum out/MCESP-26.44.3-arm64.apk | tee out/SHA256.txt
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MCESP-26.44.3-arm64
+          path: out/
+          if-no-files-found: error
