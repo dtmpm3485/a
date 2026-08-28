@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Clone launcher
-        run: git clone --recursive https://github.com/Bedrock-Cosmos/PocketCosmosLevi.git launcher
+        run: git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/Bedrock-Cosmos/PocketCosmosLevi.git launcher
 
       - uses: actions/setup-java@v4
         with:
