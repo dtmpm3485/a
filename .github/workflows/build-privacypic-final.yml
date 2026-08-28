@@ -75,7 +75,11 @@ jobs:
       - name: Build Zig launcher
         run: |
           New-Item -ItemType Directory -Force PrivacyPic/out/Launcher | Out-Null
-          zig build-exe PrivacyPic/src/PrivacyPic.Launcher/main.zig -O ReleaseSmall -target x86_64-windows -fstrip --subsystem windows -femit-bin=PrivacyPic/out/Launcher/PrivacyPic.exe
+          Push-Location PrivacyPic/src/PrivacyPic.Launcher
+          zig build-exe main.zig -O ReleaseSmall -target x86_64-windows -fstrip
+          Pop-Location
+          Move-Item PrivacyPic/src/PrivacyPic.Launcher/main.exe PrivacyPic/out/Launcher/PrivacyPic.exe -Force
+          editbin /NOLOGO /SUBSYSTEM:WINDOWS PrivacyPic/out/Launcher/PrivacyPic.exe
           if (-not (Test-Path "PrivacyPic/out/Launcher/PrivacyPic.exe")) { throw "launcher missing" }
 
       - name: Build JavaFX license manager
