@@ -321,7 +321,29 @@ static void data_driven_render_hook(void* self, void* render_context, void* acto
     original_render(self, render_context, actor_render_data);
 }
 
+typedef struct {
+    const char* requested_path;
+    uintptr_t base;
+} PhdrFindCtx;
+
+static int phdr_find_real_minecraft(struct dl_phdr_info* info, size_t size, void* data) {
+    (void)size;
+    PhdrFindCtx* ctx = (PhdrFindCtx*)data;
+    const char* name = info->dlpi_name;
+    if (!name || !strstr(name, "libminecraftpe.so")) return 0;
+    if (strstr(name, "com.aruked.kafkalauncher")) return 0;
+    if (ctx->requested_path && ctx->requested_path[0] &&
+        strcmp(name, ctx->requested_path) != 0 &&
+        strstr(ctx->requested_path, "libminecraftpe.so") == NULL) return 0;
+    ctx->base = (uintptr_t)info->dlpi_addr;
+    return 1;
+}
+
 static uintptr_t find_load_bias(const char* path) {
+    PhdrFindCtx ctx = { path, 0 };
+    dl_iterate_phdr(phdr_find_real_minecraft, &ctx);
+    if (ctx.base) return ctx.base;
+
     FILE* f = fopen("/proc/self/maps", "r");
     if (!f) return 0;
     uintptr_t best = UINTPTR_MAX;
@@ -342,11 +364,34 @@ static uintptr_t find_load_bias(const char* path) {
     return best == UINTPTR_MAX ? 0 : best;
 }
 
+static int address_is_mapped(uintptr_t target, size_t size) {
+    FILE* f = fopen("/proc/self/maps", "r");
+    if (!f) return 0;
+    char line[1024];
+    uintptr_t end_target = target + size;
+    int ok = 0;
+    while (fgets(line, sizeof(line), f)) {
+        unsigned long long start = 0, end = 0;
+        char perms[8] = {0};
+        if (sscanf(line, "%llx-%llx %7s", &start, &end, perms) != 3) continue;
+        if (perms[0] == 'r' && target >= (uintptr_t)start && end_target <= (uintptr_t)end) {
+            ok = 1;
+            break;
+        }
+    }
+    fclose(f);
+    return ok;
+}
+
 static int target_matches_2644(uintptr_t target) {
     static const uint8_t expected[] = {
         0xe9,0x23,0xbc,0x6d, 0xfd,0x7b,0x01,0xa9,
         0xf6,0x57,0x02,0xa9, 0xf4,0x4f,0x03,0xa9
     };
+    if (!address_is_mapped(target, sizeof(expected))) {
+        LOGE("ESP target is not mapped/readable: %p", (void*)target);
+        return 0;
+    }
     return memcmp((const void*)target, expected, sizeof(expected)) == 0;
 }
 
