@@ -1,6 +1,11 @@
+mod security;
+
 use std::fs;
 use std::path::PathBuf;
 use std::slice;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+static FREE_SANITIZE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 const FLAG_METADATA: u32 = 1 << 0;
 const FLAG_GPS: u32 = 1 << 1;
@@ -32,6 +37,35 @@ fn ext_lower(path: &PathBuf) -> String {
 }
 
 #[no_mangle]
+pub extern "C" fn pp_license_status() -> i32 {
+    if security::security_flags(true) == security::ALL_SECURITY_BITS { 1 } else { 0 }
+}
+
+#[no_mangle]
+pub extern "C" fn pp_get_security_flags() -> u32 {
+    security::security_flags(true)
+}
+
+#[no_mangle]
+pub extern "C" fn pp_get_batch_limit() -> u32 {
+    if security::is_pro_fast() { u32::MAX } else { 5 }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pp_get_device_id(output: *mut u16, capacity: usize) -> i32 {
+    security::write_utf16(output, capacity, &security::device_id())
+}
+
+#[no_mangle]
+pub extern "C" fn pp_install_license(path: *const u16) -> i32 {
+    let path = unsafe { security::path_from_wide(path) };
+    match path {
+        Some(p) => security::install_license(&p),
+        None => -200,
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn pp_scan_file(path: *const u16) -> u32 {
     let path = match path_from_utf16(path) { Ok(p) => p, Err(_) => return 0 };
     let data = match fs::read(&path) { Ok(v) => v, Err(_) => return 0 };
@@ -45,6 +79,14 @@ pub extern "C" fn pp_scan_file(path: *const u16) -> u32 {
 
 #[no_mangle]
 pub extern "C" fn pp_sanitize_file(input: *const u16, output: *const u16) -> i32 {
+    let is_pro = security::is_pro_fast();
+    if !is_pro {
+        let prior = FREE_SANITIZE_COUNT.fetch_add(1, Ordering::SeqCst);
+        if prior >= 5 {
+            return -100;
+        }
+    }
+
     let input = match path_from_utf16(input) { Ok(p) => p, Err(_) => return -1 };
     let output = match path_from_utf16(output) { Ok(p) => p, Err(_) => return -1 };
     let data = match fs::read(&input) { Ok(v) => v, Err(_) => return -2 };
