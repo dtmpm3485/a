@@ -113,8 +113,8 @@ public final class LicenseManagerApp extends Application {
             var device = sanitize(deviceId.getText()).toUpperCase();
 
             if (order.isBlank()) throw new IllegalArgumentException("注文IDを入力してください。");
-            if (!device.matches("PP2-[0-9A-F]{32}"))
-                throw new IllegalArgumentException("端末IDが不正です。PrivacyPicに表示された PP2-... をそのまま貼り付けてください。");
+            if (!device.matches("(?:PP2-[0-9A-F]{32}|PC-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4})"))
+                throw new IllegalArgumentException("端末IDが不正です。PrivacyPicに表示された端末IDをそのまま貼り付けてください。");
 
             long issued = Instant.now().getEpochSecond();
             long expires = 0;
