@@ -24,6 +24,7 @@ typedef struct { float x,y,z; } V3;
 static render_fn original_render = NULL;
 static uintptr_t minecraft_load_bias = 0;
 static int hook_state = 0;
+static int esp_enabled = 1;
 static int install_attempts = 0;
 static uint64_t hook_calls = 0;
 static uint64_t classified_calls = 0;
@@ -154,7 +155,7 @@ static void update_esp(uintptr_t actor,int cat,float x,float top,float bottom){
 
 static void render_hook(void* self,void* rc,void* ard){
     __atomic_add_fetch(&hook_calls, 1, __ATOMIC_RELAXED);
-    if(ard){
+    if(__atomic_load_n(&esp_enabled,__ATOMIC_RELAXED) && ard){
         void* actor=*(void**)ard; int cat=classify_actor(actor);
         if(cat){
             __atomic_add_fetch(&classified_calls, 1, __ATOMIC_RELAXED);
@@ -205,7 +206,9 @@ JNIEXPORT jboolean JNICALL Java_org_levimc_launcher_core_minecraft_EspOverlayVie
 }
 
 JNIEXPORT jint JNICALL Java_org_levimc_launcher_core_minecraft_EspOverlayView_nativeFillEspSnapshot(JNIEnv* env,jclass cls,jfloatArray output){
-    (void)cls; if(!output) return 0; jsize cap=(*env)->GetArrayLength(env,output); if(cap<4) return 0;
+    (void)cls;
+    if(!__atomic_load_n(&esp_enabled,__ATOMIC_RELAXED)) return 0;
+    if(!output) return 0; jsize cap=(*env)->GetArrayLength(env,output); if(cap<4) return 0;
     jfloat* out=(*env)->GetFloatArrayElements(env,output,NULL); if(!out) return 0;
     int max=cap/4,count=0; uint64_t t=now_ms(); pthread_mutex_lock(&esp_mutex);
     for(int i=0;i<MAX_ESP&&count<max;i++){
@@ -230,4 +233,23 @@ JNIEXPORT jstring JNICALL Java_org_levimc_launcher_core_minecraft_EspOverlayView
         (unsigned long long)minecraft_load_bias,
         (unsigned long long)last_unknown_rva);
     return (*env)->NewStringUTF(env,buf);
+}
+
+
+JNIEXPORT void JNICALL Java_org_levimc_launcher_core_minecraft_EspOverlayView_nativeSetEspEnabled(
+        JNIEnv* env,jclass cls,jboolean enabled){
+    (void)env;(void)cls;
+    __atomic_store_n(&esp_enabled, enabled ? 1 : 0, __ATOMIC_RELEASE);
+    if(!enabled){
+        pthread_mutex_lock(&esp_mutex);
+        memset(esp_entries,0,sizeof(esp_entries));
+        pthread_mutex_unlock(&esp_mutex);
+    }
+    LOGI("ESP %s", enabled ? "ON" : "OFF");
+}
+
+JNIEXPORT jboolean JNICALL Java_org_levimc_launcher_core_minecraft_EspOverlayView_nativeIsEspEnabled(
+        JNIEnv* env,jclass cls){
+    (void)env;(void)cls;
+    return __atomic_load_n(&esp_enabled,__ATOMIC_ACQUIRE) ? JNI_TRUE : JNI_FALSE;
 }
