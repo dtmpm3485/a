@@ -118,7 +118,7 @@ jobs:
       - name: Build Zig launcher
         run: |
           New-Item -ItemType Directory -Force PrivacyPic/out/Launcher | Out-Null
-          zig build-exe PrivacyPic/src/PrivacyPic.Launcher/main.zig -O ReleaseSmall -target x86_64-windows -fstrip -mwindows -femit-bin=PrivacyPic/out/Launcher/PrivacyPic.exe
+          zig build-exe PrivacyPic/src/PrivacyPic.Launcher/main.zig -O ReleaseSmall -target x86_64-windows -fstrip --subsystem windows -femit-bin=PrivacyPic/out/Launcher/PrivacyPic.exe
 
       - name: Stage user runtime
         run: |
