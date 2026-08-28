@@ -13,6 +13,7 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 #define DATA_DRIVEN_RENDER_RVA ((uintptr_t)0x0a5c8de8ULL)
+#define LIVE_PLAYER_RENDER_RVA ((uintptr_t)0x092b8598ULL)
 #define MAX_ESP 256
 #define STALE_MS 300ULL
 
@@ -22,6 +23,7 @@ typedef struct { uintptr_t actor; float x, top, bottom; int category; uint64_t s
 typedef struct { float x,y,z; } V3;
 
 static render_fn original_render = NULL;
+static render_fn original_player_render = NULL;
 static uintptr_t minecraft_load_bias = 0;
 static int hook_state = 0;
 static int esp_enabled = 1;
@@ -153,20 +155,28 @@ static void update_esp(uintptr_t actor,int cat,float x,float top,float bottom){
     pthread_mutex_unlock(&esp_mutex);
 }
 
-static void render_hook(void* self,void* rc,void* ard){
+static void capture_render_entity(void* rc,void* ard){
     __atomic_add_fetch(&hook_calls, 1, __ATOMIC_RELAXED);
-    if(__atomic_load_n(&esp_enabled,__ATOMIC_RELAXED) && ard){
-        void* actor=*(void**)ard; int cat=classify_actor(actor);
-        if(cat){
-            __atomic_add_fetch(&classified_calls, 1, __ATOMIC_RELAXED);
-            float x,t,b;
-            if(project_actor(rc,ard,cat,&x,&t,&b)) {
-                __atomic_add_fetch(&projected_calls, 1, __ATOMIC_RELAXED);
-                update_esp(strip_ptr((uintptr_t)actor),cat,x,t,b);
-            }
-        }
+    if(!__atomic_load_n(&esp_enabled,__ATOMIC_RELAXED) || !ard) return;
+    void* actor=*(void**)ard;
+    int cat=classify_actor(actor);
+    if(!cat) return;
+    __atomic_add_fetch(&classified_calls, 1, __ATOMIC_RELAXED);
+    float x,t,b;
+    if(project_actor(rc,ard,cat,&x,&t,&b)) {
+        __atomic_add_fetch(&projected_calls, 1, __ATOMIC_RELAXED);
+        update_esp(strip_ptr((uintptr_t)actor),cat,x,t,b);
     }
+}
+
+static void render_hook(void* self,void* rc,void* ard){
+    capture_render_entity(rc,ard);
     if(original_render) original_render(self,rc,ard);
+}
+
+static void player_render_hook(void* self,void* rc,void* ard){
+    capture_render_entity(rc,ard);
+    if(original_player_render) original_player_render(self,rc,ard);
 }
 
 JNIEXPORT jboolean JNICALL Java_org_levimc_launcher_core_minecraft_EspOverlayView_nativeInstallEsp(JNIEnv* env,jclass cls){
@@ -197,12 +207,24 @@ JNIEXPORT jboolean JNICALL Java_org_levimc_launcher_core_minecraft_EspOverlayVie
     void* stub=shadowhook_hook_func_addr((void*)target,(void*)render_hook,(void**)&original_render);
     if(!stub||!original_render){
         int e=shadowhook_get_errno();
-        snprintf(last_status,sizeof(last_status),"hook failed: %d",e);
-        LOGE("shadowhook_hook_func_addr failed: %d",e);
+        snprintf(last_status,sizeof(last_status),"entity hook failed: %d",e);
+        LOGE("entity shadowhook failed: %d",e);
         return JNI_FALSE;
     }
-    snprintf(last_status,sizeof(last_status),"hook installed");
-    __atomic_store_n(&hook_state,2,__ATOMIC_RELEASE); LOGI("ESP installed"); return JNI_TRUE;
+
+    uintptr_t player_target=minecraft_load_bias+LIVE_PLAYER_RENDER_RVA;
+    static const uint8_t player_fp[]={0x08,0x00,0x40,0xf9,0x02,0x49,0x40,0xf9,0x40,0x00,0x1f,0xd6};
+    int player_ok=0;
+    if(readable(player_target,sizeof(player_fp))&&memcmp((void*)player_target,player_fp,sizeof(player_fp))==0){
+        void* player_stub=shadowhook_hook_func_addr(
+            (void*)player_target,(void*)player_render_hook,(void**)&original_player_render);
+        player_ok=(player_stub!=NULL&&original_player_render!=NULL);
+    }
+
+    snprintf(last_status,sizeof(last_status),player_ok?"hooks installed":"entity hook installed; player hook unavailable");
+    __atomic_store_n(&hook_state,2,__ATOMIC_RELEASE);
+    LOGI("ESP installed (player=%d)",player_ok);
+    return JNI_TRUE;
 }
 
 JNIEXPORT jint JNICALL Java_org_levimc_launcher_core_minecraft_EspOverlayView_nativeFillEspSnapshot(JNIEnv* env,jclass cls,jfloatArray output){
