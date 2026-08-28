@@ -24,6 +24,12 @@ typedef struct { float x,y,z; } V3;
 static render_fn original_render = NULL;
 static uintptr_t minecraft_load_bias = 0;
 static int hook_state = 0;
+static int install_attempts = 0;
+static uint64_t hook_calls = 0;
+static uint64_t classified_calls = 0;
+static uint64_t projected_calls = 0;
+static uintptr_t last_unknown_rva = 0;
+static char last_status[128] = "not installed";
 static pthread_mutex_t esp_mutex = PTHREAD_MUTEX_INITIALIZER;
 static EspEntry esp_entries[MAX_ESP];
 
@@ -93,6 +99,7 @@ static int classify_actor(void* actor){
     if(in_list(rva,PLAYER_VPTRS,sizeof(PLAYER_VPTRS)/sizeof(PLAYER_VPTRS[0]))) return CAT_PLAYER;
     if(in_list(rva,ANIMAL_VPTRS,sizeof(ANIMAL_VPTRS)/sizeof(ANIMAL_VPTRS[0]))) return CAT_ANIMAL;
     if(in_list(rva,MOB_VPTRS,sizeof(MOB_VPTRS)/sizeof(MOB_VPTRS[0]))) return CAT_MOB;
+    last_unknown_rva = rva;
     return CAT_NONE;
 }
 
@@ -146,9 +153,17 @@ static void update_esp(uintptr_t actor,int cat,float x,float top,float bottom){
 }
 
 static void render_hook(void* self,void* rc,void* ard){
+    __atomic_add_fetch(&hook_calls, 1, __ATOMIC_RELAXED);
     if(ard){
         void* actor=*(void**)ard; int cat=classify_actor(actor);
-        if(cat){ float x,t,b; if(project_actor(rc,ard,cat,&x,&t,&b)) update_esp(strip_ptr((uintptr_t)actor),cat,x,t,b); }
+        if(cat){
+            __atomic_add_fetch(&classified_calls, 1, __ATOMIC_RELAXED);
+            float x,t,b;
+            if(project_actor(rc,ard,cat,&x,&t,&b)) {
+                __atomic_add_fetch(&projected_calls, 1, __ATOMIC_RELAXED);
+                update_esp(strip_ptr((uintptr_t)actor),cat,x,t,b);
+            }
+        }
     }
     if(original_render) original_render(self,rc,ard);
 }
@@ -156,16 +171,36 @@ static void render_hook(void* self,void* rc,void* ard){
 JNIEXPORT jboolean JNICALL Java_org_levimc_launcher_core_minecraft_EspOverlayView_nativeInstallEsp(JNIEnv* env,jclass cls){
     (void)env;(void)cls;
     if(__atomic_load_n(&hook_state,__ATOMIC_ACQUIRE)==2) return JNI_TRUE;
+    __atomic_add_fetch(&install_attempts, 1, __ATOMIC_RELAXED);
     minecraft_load_bias=find_minecraft_bias();
-    if(!minecraft_load_bias){ LOGE("libminecraftpe.so not mapped"); return JNI_FALSE; }
+    if(!minecraft_load_bias){
+        snprintf(last_status,sizeof(last_status),"waiting for libminecraftpe.so");
+        LOGE("libminecraftpe.so not mapped");
+        return JNI_FALSE;
+    }
 
     uintptr_t target=minecraft_load_bias+DATA_DRIVEN_RENDER_RVA;
     static const uint8_t fp[]={0xe9,0x23,0xbc,0x6d,0xfd,0x7b,0x01,0xa9,0xf6,0x57,0x02,0xa9,0xf4,0x4f,0x03,0xa9};
-    if(!readable(target,sizeof(fp))||memcmp((void*)target,fp,sizeof(fp))!=0){ LOGE("26.44.3 fingerprint mismatch"); return JNI_FALSE; }
+    if(!readable(target,sizeof(fp))||memcmp((void*)target,fp,sizeof(fp))!=0){
+        snprintf(last_status,sizeof(last_status),"fingerprint mismatch @ 0x%llx",(unsigned long long)DATA_DRIVEN_RENDER_RVA);
+        LOGE("26.44.3 fingerprint mismatch");
+        return JNI_FALSE;
+    }
 
-    if(shadowhook_init(SHADOWHOOK_MODE_UNIQUE,false)!=SHADOWHOOK_ERRNO_OK){ LOGE("shadowhook_init failed"); return JNI_FALSE; }
+    int init = shadowhook_init(SHADOWHOOK_MODE_UNIQUE,false);
+    if(init!=SHADOWHOOK_ERRNO_OK && __atomic_load_n(&hook_state,__ATOMIC_ACQUIRE)!=2){
+        snprintf(last_status,sizeof(last_status),"shadowhook init failed: %d",init);
+        LOGE("shadowhook_init failed");
+        return JNI_FALSE;
+    }
     void* stub=shadowhook_hook_func_addr((void*)target,(void*)render_hook,(void**)&original_render);
-    if(!stub||!original_render){ LOGE("shadowhook_hook_func_addr failed: %d",shadowhook_get_errno()); return JNI_FALSE; }
+    if(!stub||!original_render){
+        int e=shadowhook_get_errno();
+        snprintf(last_status,sizeof(last_status),"hook failed: %d",e);
+        LOGE("shadowhook_hook_func_addr failed: %d",e);
+        return JNI_FALSE;
+    }
+    snprintf(last_status,sizeof(last_status),"hook installed");
     __atomic_store_n(&hook_state,2,__ATOMIC_RELEASE); LOGI("ESP installed"); return JNI_TRUE;
 }
 
@@ -179,4 +214,20 @@ JNIEXPORT jint JNICALL Java_org_levimc_launcher_core_minecraft_EspOverlayView_na
         out[count*4]=e->x; out[count*4+1]=e->top; out[count*4+2]=e->bottom; out[count*4+3]=(float)e->category; count++;
     }
     pthread_mutex_unlock(&esp_mutex); (*env)->ReleaseFloatArrayElements(env,output,out,0); return count;
+}
+
+
+JNIEXPORT jstring JNICALL Java_org_levimc_launcher_core_minecraft_EspOverlayView_nativeGetDebugStatus(JNIEnv* env,jclass cls){
+    (void)cls;
+    char buf[384];
+    snprintf(buf,sizeof(buf),
+        "A5 %s | attempts=%d | calls=%llu | classified=%llu | projected=%llu | base=0x%llx | unknown=0x%llx",
+        last_status,
+        __atomic_load_n(&install_attempts,__ATOMIC_RELAXED),
+        (unsigned long long)__atomic_load_n(&hook_calls,__ATOMIC_RELAXED),
+        (unsigned long long)__atomic_load_n(&classified_calls,__ATOMIC_RELAXED),
+        (unsigned long long)__atomic_load_n(&projected_calls,__ATOMIC_RELAXED),
+        (unsigned long long)minecraft_load_bias,
+        (unsigned long long)last_unknown_rva);
+    return (*env)->NewStringUTF(env,buf);
 }
