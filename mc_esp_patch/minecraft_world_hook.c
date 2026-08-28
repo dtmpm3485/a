@@ -218,7 +218,7 @@ static int project_actor(void* render_context, void* actor_render_data, int cate
     memcpy(&pos, (uint8_t*)actor_render_data + 0x10, sizeof(pos));
     if (!sane_v3(pos)) return 0;
 
-    void* screen_context = *(void**)((uint8_t*)render_context + 0x28);
+    void* screen_context = *(void**)((uint8_t*)render_context + 0x20);
     if (screen_context == NULL) return 0;
     void* camera = *(void**)((uint8_t*)screen_context + 0x18);
     if (camera == NULL) return 0;
