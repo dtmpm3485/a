@@ -13,7 +13,6 @@ public sealed class MainForm : Form
     private readonly Button clean = new();
     private readonly Button license = new();
     private readonly ProgressBar progress = new();
-    private LicenseInfo? licenseInfo;
     private const int FreeBatchLimit = 5;
 
     public MainForm()
@@ -53,7 +52,7 @@ public sealed class MainForm : Form
         license.Click += (_, _) => ImportLicense();
         DragEnter += OnDragEnter; DragDrop += OnDragDrop; files.DragEnter += OnDragEnter; files.DragDrop += OnDragDrop;
 
-        licenseInfo = LicenseService.LoadInstalled();
+        _ = NativeCore.LicenseStatus(); // 起動時に10段階検証を実施
         RefreshPlan();
     }
 
@@ -62,7 +61,7 @@ public sealed class MainForm : Form
         b.Text = text; b.AutoSize = true; b.Height = 34; b.Padding = new Padding(8, 2, 8, 2); b.FlatStyle = FlatStyle.System;
     }
 
-    private bool IsPro => licenseInfo is not null;
+    private bool IsPro => NativeCore.LicenseStatus();
 
     private void RefreshPlan()
     {
@@ -70,13 +69,13 @@ public sealed class MainForm : Form
         {
             planLabel.Text = "PRO ✓"; planLabel.ForeColor = Color.SeaGreen;
             addFolder.Enabled = true;
-            hintLabel.Text = $"Pro有効 — 注文ID: {licenseInfo!.OrderId} / 一括処理・フォルダ処理が利用できます。元画像は変更しません。";
+            hintLabel.Text = $"Pro有効 — 10段階検証 {NativeCore.SecurityStageCount()}/10 / 端末ID: {NativeCore.GetDeviceId()}";
         }
         else
         {
             planLabel.Text = "FREE"; planLabel.ForeColor = Color.DarkOrange;
             addFolder.Enabled = false;
-            hintLabel.Text = $"Free版は1回 {FreeBatchLimit} 枚まで。Proでは枚数制限とフォルダ制限が解除されます。元画像は変更しません。";
+            hintLabel.Text = $"Free版は1回 {FreeBatchLimit} 枚まで。端末ID: {NativeCore.GetDeviceId()}  / 購入時にこのIDを送ってください。";
         }
     }
 
@@ -277,9 +276,12 @@ public sealed class MainForm : Form
 
         try
         {
-            licenseInfo = LicenseService.Install(d.FileName);
+            var rc = NativeCore.InstallLicense(d.FileName);
+            if (rc != 0)
+                throw new InvalidDataException($"ライセンスを有効化できませんでした。コード: {rc}");
+
             RefreshPlan();
-            MessageBox.Show(this, "Proライセンスを有効化しました。", "PrivacyPic", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "Proライセンスを有効化しました。\n10段階検証を通過しています。", "PrivacyPic", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception ex)
         {
